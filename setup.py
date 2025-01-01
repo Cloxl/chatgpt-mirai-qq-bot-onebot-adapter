@@ -15,7 +15,7 @@ setup(
     url="https://github.com/cloxl/chatgpt-mirai-qq-bot-onebot-adapter",
     classifiers=[
         "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",
+        "License :: OSI Approved :: GNU Affero General Public License v3.0",
         "Operating System :: OS Independent",
     ],
 )
