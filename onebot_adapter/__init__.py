@@ -1,7 +1,7 @@
 from framework.logger import get_logger
 from framework.plugin_manager.plugin import Plugin
-from plugins.onebot_adapter.adapter import OneBotAdapter
-from plugins.onebot_adapter.config import OneBotConfig
+from .adapter import OneBotAdapter
+from .config import OneBotConfig
 
 logger = get_logger("OneBot-Adapter")
 
