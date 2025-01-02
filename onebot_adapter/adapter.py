@@ -1,16 +1,15 @@
 import asyncio
 import os
 
-from aiocqhttp import CQHttp
+from aiocqhttp import CQHttp, Event
 from aiocqhttp import Message as OneBotMessage
 from aiocqhttp import MessageSegment
 
 from framework.im.adapter import IMAdapter
-from framework.im.message import Message, TextMessage
+from framework.im.message import Message
 from framework.logger import get_logger
 
 from .config import OneBotConfig
-from .handlers.command import CommandHandler
 from .handlers.event_filter import EventFilter
 from .message.media import create_message_element
 
@@ -22,15 +21,14 @@ class OneBotAdapter(IMAdapter):
         self.config = config
         # 配置反向 WebSocket
         self.bot = CQHttp(
-            # enable_http_post=False,
-            # websocket=False,  # 禁用正向 WebSocket
-            # ws_reverse_url=f"ws://{self.config.host}:{self.config.port}/ws",  # 反向 WebSocket 地址
-            # ws_reverse_api_url=f"ws://{self.config.host}:{self.config.port}/ws/api",  # API
-            # ws_reverse_event_url=f"ws://{self.config.host}:{self.config.port}/ws/event",  # 事件
-            # ws_reverse_reconnect_interval=int(self.config.reconnect_interval),  # 重连间隔
-            # ws_reverse_reconnect_on_code_1000=True,  # 允许正常关闭时重连
+            enable_http_post=False,
+            websocket=False,  # 禁用正向 WebSocket
+            ws_reverse_url=f"ws://{self.config.host}:{self.config.port}/ws",  # 反向 WebSocket 地址
+            ws_reverse_api_url=f"ws://{self.config.host}:{self.config.port}/ws/api",  # API
+            ws_reverse_event_url=f"ws://{self.config.host}:{self.config.port}/ws/event",  # 事件
+            ws_reverse_reconnect_interval=int(self.config.reconnect_interval),  # 重连间隔
+            ws_reverse_reconnect_on_code_1000=True,  # 允许正常关闭时重连
         )
-        self.cmd_handler = CommandHandler()
 
         # 从配置获取过滤规则文件路径
         filter_path = os.path.join(
@@ -64,32 +62,12 @@ class OneBotAdapter(IMAdapter):
 
         message = self.convert_to_message(event)
 
-        # 获取消息来源
-        message_type = event.get('message_type', 'private')
-        sender_id = event.get('user_id', '')
-        group_id = event.get('group_id', '') if message_type == 'group' else ''
-        chat_id = f"group_{group_id}" if message_type == 'group' else f"private_{sender_id}"
+        await self.handle_message(
+            event=event,
+            message=message
+        )
 
-        # 解析命令
-        text = event['message'][0]['data']['text'] if event['message'] and event['message'][0]['type'] == 'text' else ''
-        command, args = self.cmd_handler.parse_command(text)
-
-        if command:
-            await self.handle_command(chat_id, command, args, message)
-        else:
-            await self.handle_message(chat_id, message)
-
-    async def handle_command(self, chat_id: str, command: str, args: str, message: Message):
-        """处理命令"""
-        if command == 'test':
-            response = Message(
-                sender="bot",
-                message_elements=[TextMessage(f"收到测试命令，参数：{args or '无'}")],
-                raw_message={}
-            )
-            await self.send_message(chat_id, response)
-
-    async def handle_message(self, chat_id: str, message: Message):
+    async def handle_message(self, event: Event, message: Message):
         """处理普通消息"""
         pass
 
@@ -126,7 +104,7 @@ class OneBotAdapter(IMAdapter):
         for element in message.message_elements:
             data = element.to_dict()
             msg_type = data['type']
-            
+
             try:
                 if msg_type in segment_converters:
                     segment = segment_converters[msg_type](data)
@@ -149,7 +127,7 @@ class OneBotAdapter(IMAdapter):
                 port=int(self.config.port)
             ))
             loop.run_forever()
-            
+
             logger.info(f"OneBot adapter [{self.config.name}] started")
         except Exception as e:
             logger.error(f"Failed to start OneBot adapter: {str(e)}")
@@ -167,13 +145,13 @@ class OneBotAdapter(IMAdapter):
             await self.bot._server_app.shutdown()
         logger.info("OneBot adapter stopped")
 
-    async def send_message(self, chat_id: str, message: Message):
+    async def send_message(self, self_id: int, chat_id: str, message: Message):
         """发送消息"""
         onebot_message = self.convert_to_message_segment(message)
         message_type = 'private' if chat_id.startswith('private_') else 'group'
         target_id = int(chat_id.split('_')[1])
 
         if message_type == 'private':
-            await self.bot.send_private_msg(user_id=target_id, message=onebot_message)
+            await self.bot.send_private_msg(self_id=self_id, user_id=target_id, message=onebot_message)
         else:
-            await self.bot.send_group_msg(group_id=target_id, message=onebot_message)
+            await self.bot.send_group_msg(self_id=self_id, group_id=target_id, message=onebot_message)
