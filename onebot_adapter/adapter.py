@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 
 from aiocqhttp import CQHttp, Event
 from aiocqhttp import Message as OneBotMessage
@@ -19,16 +20,9 @@ logger = get_logger("OneBot")
 class OneBotAdapter(IMAdapter):
     def __init__(self, config: OneBotConfig):
         self.config = config
+        
         # 配置反向 WebSocket
-        self.bot = CQHttp(
-            enable_http_post=False,
-            websocket=False,  # 禁用正向 WebSocket
-            ws_reverse_url=f"ws://{self.config.host}:{self.config.port}/ws",  # 反向 WebSocket 地址
-            ws_reverse_api_url=f"ws://{self.config.host}:{self.config.port}/ws/api",  # API
-            ws_reverse_event_url=f"ws://{self.config.host}:{self.config.port}/ws/event",  # 事件
-            ws_reverse_reconnect_interval=int(self.config.reconnect_interval),  # 重连间隔
-            ws_reverse_reconnect_on_code_1000=True,  # 允许正常关闭时重连
-        )
+        self.bot = CQHttp()
 
         # 从配置获取过滤规则文件路径
         filter_path = os.path.join(
@@ -36,24 +30,40 @@ class OneBotAdapter(IMAdapter):
             self.config.filter_file
         )
         self.event_filter = EventFilter(filter_path)
+
         self._server_task = None
+        self.heartbeat_states = {}  # 存储每个 bot 的心跳状态
+        self.heartbeat_timeout = self.config.heartbeat_interval
+        self._heartbeat_task = None
 
         # 注册消息和元事件处理器
         self.bot.on_message(self._handle_msg)
         self.bot.on_meta_event(self._handle_meta)
 
+    async def _check_heartbeats(self):
+        """检查所有连接的心跳状态"""
+        while True:
+            current_time = time.time()
+            for self_id, last_time in list(self.heartbeat_states.items()):
+                if current_time - last_time > self.heartbeat_timeout:
+                    logger.warning(f"Bot {self_id} disconnected (heartbeat timeout)")
+                    self.heartbeat_states.pop(self_id, None)
+            await asyncio.sleep(5)  # 每5秒检查一次
+
     async def _handle_meta(self, event):
         """处理元事件"""
-        # 连接事件处理
+        self_id = event.self_id
+
         if event.get('meta_event_type') == 'lifecycle':
             if event.get('sub_type') == 'connect':
-                logger.info(f"bot {event.self_id} connected")
+                logger.info(f"Bot {self_id} connected")
+                self.heartbeat_states[self_id] = time.time()
             elif event.get('sub_type') == 'disconnect':
-                logger.info(f"bot {event.self_id} disconnected")
+                logger.info(f"Bot {self_id} disconnected")
+                self.heartbeat_states.pop(self_id, None)
 
         elif event.get('meta_event_type') == 'heartbeat':
-            # logger.debug("Received heartbeat")
-            pass
+            self.heartbeat_states[self_id] = time.time()
 
     async def _handle_msg(self, event):
         """处理消息的回调函数"""
@@ -117,11 +127,12 @@ class OneBotAdapter(IMAdapter):
     def run(self):
         """启动适配器"""
         try:
-            logger.info(f"Starting OneBot adapter [{self.config.name}] on {self.config.host}:{self.config.port}")
-
-            # 创建事件循环
+            logger.info(f"Starting OneBot adapter on {self.config.host}:{self.config.port}")
             loop = asyncio.new_event_loop()
-
+            
+            # 启动心跳检测服务
+            self._heartbeat_task = loop.create_task(self._check_heartbeats())
+            
             self._server_task = loop.create_task(self.bot.run_task(
                 host=self.config.host,
                 port=int(self.config.port)
@@ -135,6 +146,13 @@ class OneBotAdapter(IMAdapter):
 
     async def stop(self):
         """停止适配器"""
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            
         if self._server_task:
             self._server_task.cancel()
             try:
