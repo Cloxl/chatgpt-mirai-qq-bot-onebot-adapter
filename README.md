@@ -15,23 +15,21 @@ pip install chatgpt-mirai-qq-bot-onebot-adapter
 ```yaml
 ims:
   enable:
-    onebot: ['onebot-default']
+    onebot: ['onebot']
     ... # 其他IM配置
   configs:
-    onebot-default:
-      host: '0.0.0.0'
-      port: '5545'
-      access_token: ''
-      filter_file: 'filter.json'
-      name: 'onebot'
-      heartbeat_interval: '15000'    # 心跳间隔（毫秒）
-      reconnect_interval: '3000'     # 重连间隔（毫秒）
+    onebot:
+      host: '0.0.0.0'             # OneBot服务器地址
+      port: '5545'                # OneBot服务器端口
+      access_token: ''            # OneBot服务器访问令牌
+      filter_file: 'filter.json'  # 事件过滤器文件
+      heartbeat_interval: '15'    # 心跳间隔(秒)
     ... # 其他IM配置
 ```
 
 什么是`filter.json`？
 
-`filter.json` 是`事件过滤器`，用于过滤消息的规则文件，具体请参考 [CQHTTP-API](https://github.com/kyubotics/coolq-http-api/blob/master/docs/4.15/EventFilter.md)
+`filter.json` 是`事件过滤器`用于过滤消息的规则文件，具体请参考 [CQHTTP-API](https://github.com/kyubotics/coolq-http-api/blob/master/docs/4.15/EventFilter.md)
 
 ## 项目工作原理
 ```mermaid
