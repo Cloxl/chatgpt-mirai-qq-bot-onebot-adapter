@@ -124,22 +124,19 @@ class OneBotAdapter(IMAdapter):
 
         return onebot_message
 
-    def run(self):
+    async def start(self):
         """启动适配器"""
         try:
             logger.info(f"Starting OneBot adapter on {self.config.host}:{self.config.port}")
-            loop = asyncio.new_event_loop()
 
-            # 启动心跳检测服务
-            self._heartbeat_task = loop.create_task(self._check_heartbeats())
-
-            self._server_task = loop.create_task(self.bot.run_task(
+            # 使用现有的事件循环
+            self._heartbeat_task = asyncio.create_task(self._check_heartbeats())
+            self._server_task = asyncio.create_task(self.bot.run_task(
                 host=self.config.host,
                 port=int(self.config.port)
             ))
-            loop.run_forever()
 
-            logger.info(f"OneBot adapter [{self.config.name}] started")
+            logger.info(f"OneBot adapter started")
         except Exception as e:
             logger.error(f"Failed to start OneBot adapter: {str(e)}")
             raise
