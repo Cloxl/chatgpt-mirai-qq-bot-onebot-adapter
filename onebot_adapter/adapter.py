@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+from typing import Optional, List, Dict, Any
 
 from aiocqhttp import CQHttp, Event
 from aiocqhttp import Message as OneBotMessage
@@ -13,6 +14,7 @@ from framework.logger import get_logger
 from .config import OneBotConfig
 from .handlers.event_filter import EventFilter
 from .message.media import create_message_element
+from .handlers.message_result import MessageResult, UserOperationType
 
 logger = get_logger("OneBot")
 
@@ -39,6 +41,7 @@ class OneBotAdapter(IMAdapter):
         # 注册消息和元事件处理器
         self.bot.on_message(self._handle_msg)
         self.bot.on_meta_event(self._handle_meta)
+        self.bot.on_notice(self.handle_notice)
 
     async def _check_heartbeats(self):
         """检查所有连接的心跳状态"""
@@ -77,11 +80,14 @@ class OneBotAdapter(IMAdapter):
             message=message
         )
 
+    async def handle_notice(self, event: Event):
+        pass
+
     async def handle_message(self, event: Event, message: IMMessage):
         """处理普通消息"""
         pass
 
-    def convert_to_message(self, event):
+    def convert_to_message(self, event) -> IMMessage:
         """将 OneBot 消息转换为统一消息格式"""
         segments = []
         sender = event.get('sender', {}).get('nickname', '') or str(event.get('user_id', ''))
@@ -160,13 +166,141 @@ class OneBotAdapter(IMAdapter):
             await self.bot._server_app.shutdown()
         logger.info("OneBot adapter stopped")
 
-    async def send_message(self, self_id: int, chat_id: str, message: IMMessage):
-        """发送消息"""
-        onebot_message = self.convert_to_message_segment(message)
-        message_type = 'private' if chat_id.startswith('private_') else 'group'
-        target_id = int(chat_id.split('_')[1])
+    async def _delayed_recall(
+            self,
+            message_id: int,
+            delay: int,
+            results_list: List[Dict[str, Any]]
+    ):
+        """带结果记录的延迟撤回"""
+        try:
+            await asyncio.sleep(delay)
+            recall_result = await self.bot.delete_msg(message_id=message_id)
+            results_list.append({"action": "delayed_recall", "result": recall_result})
+        except Exception as e:
+            results_list.append({
+                "action": "delayed_recall",
+                "error": str(e)
+            })
 
-        if message_type == 'private':
-            await self.bot.send_private_msg(self_id=self_id, user_id=target_id, message=onebot_message)
-        else:
-            await self.bot.send_group_msg(self_id=self_id, group_id=target_id, message=onebot_message)
+    async def send_message(
+            self,
+            self_id: int,
+            chat_id: str,
+            message: IMMessage,
+            reply_id: Optional[int] = None,
+            delete_after: Optional[int] = None,
+            target_user_id: Optional[int] = None,
+            operation_type: UserOperationType = UserOperationType.NONE,
+            operation_duration: Optional[int] = None,
+            recall_target_id: Optional[int] = None
+    ) -> MessageResult:
+        """统一的消息发送方法
+
+        Args:
+            self_id: 机器人QQ号
+            chat_id: 目标ID (private_{user_id} 或 group_{group_id})
+            message: 统一消息格式
+            reply_id: 要回复的消息ID
+            delete_after: 发送后自动撤回等待时间(秒)
+            target_user_id: 目标用户ID
+            operation_type: 对目标用户的操作类型
+            operation_duration: 操作时长(如禁言时间)
+            recall_target_id: 要撤回的目标消息ID
+        """
+        result = MessageResult(
+            target_user_id=target_user_id,
+            operation_type=operation_type
+        )
+
+        try:
+            message_type, target_id = chat_id.split('_')
+            target_id = int(target_id)
+
+            # 转换消息格式
+            onebot_message = self.convert_to_message_segment(message)
+
+            # 添加回复
+            if reply_id:
+                onebot_message = MessageSegment.reply(reply_id) + onebot_message
+
+            # 根据操作类型处理
+            if message_type == 'group':
+                # 撤回消息
+                if operation_type == UserOperationType.RECALL and recall_target_id:
+                    try:
+                        recall_result = await self.bot.delete_msg(message_id=recall_target_id)
+                        result.recalled_id = recall_target_id
+                        result.raw_results.append({"action": "recall", "result": recall_result})
+                        if not message.message_elements:
+                            return result
+                    except Exception as e:
+                        result.success = False
+                        result.error = f"Failed to recall message: {str(e)}"
+                        return result
+
+                # 不能使用此方法简化if逻辑 如果是普通信息缺失target_user_id会导致无法发送消息
+                # if not target_user_id:
+                #     ...
+
+                # @用户
+                if operation_type == UserOperationType.AT and target_user_id:
+                    onebot_message = MessageSegment.at(target_user_id) + MessageSegment.text(' ') + onebot_message
+
+                # 禁言用户
+                elif operation_type == UserOperationType.MUTE and target_user_id:
+                    try:
+                        mute_result = await self.bot.set_group_ban(
+                            group_id=target_id,
+                            user_id=target_user_id,
+                            duration=operation_duration or 60
+                        )
+                        result.operation_duration = operation_duration
+                        result.raw_results.append({"action": "mute", "result": mute_result})
+                    except Exception as e:
+                        result.success = False
+                        result.error = f"Failed to mute user: {str(e)}"
+                        return result
+
+                # 踢出用户
+                elif operation_type == UserOperationType.KICK and target_user_id:
+                    try:
+                        kick_result = await self.bot.set_group_kick(
+                            group_id=target_id,
+                            user_id=target_user_id
+                        )
+                        result.raw_results.append({"action": "kick", "result": kick_result})
+                    except Exception as e:
+                        result.success = False
+                        result.error = f"Failed to kick user: {str(e)}"
+                        return result
+
+            # 发送消息
+            try:
+                api_func = self.bot.send_private_msg if message_type == 'private' else self.bot.send_group_msg
+                target_key = 'user_id' if message_type == 'private' else 'group_id'
+                send_result = await api_func(
+                    self_id=self_id,
+                    **{target_key: target_id},
+                    message=onebot_message
+                )
+                result.message_id = send_result.get('message_id')
+                result.raw_results.append({"action": "send", "result": send_result})
+
+                if delete_after and result.message_id:
+                    await asyncio.create_task(self._delayed_recall(
+                        result.message_id,
+                        delete_after,
+                        result.raw_results
+                    ))
+
+            except Exception as e:
+                result.success = False
+                result.error = f"Failed to send message: {str(e)}"
+
+            return result
+
+        except Exception as e:
+            result.success = False
+            result.error = f"Error in send_message: {str(e)}"
+            return result
