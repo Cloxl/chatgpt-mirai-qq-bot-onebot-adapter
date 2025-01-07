@@ -7,7 +7,7 @@ from aiocqhttp import Message as OneBotMessage
 from aiocqhttp import MessageSegment
 
 from framework.im.adapter import IMAdapter
-from framework.im.message import Message
+from framework.im.message import IMMessage
 from framework.logger import get_logger
 
 from .config import OneBotConfig
@@ -20,7 +20,7 @@ logger = get_logger("OneBot")
 class OneBotAdapter(IMAdapter):
     def __init__(self, config: OneBotConfig):
         self.config = config
-        
+
         # 配置反向 WebSocket
         self.bot = CQHttp()
 
@@ -77,7 +77,7 @@ class OneBotAdapter(IMAdapter):
             message=message
         )
 
-    async def handle_message(self, event: Event, message: Message):
+    async def handle_message(self, event: Event, message: IMMessage):
         """处理普通消息"""
         pass
 
@@ -92,9 +92,9 @@ class OneBotAdapter(IMAdapter):
             if element:
                 segments.append(element)
 
-        return Message(sender=sender, message_elements=segments, raw_message={})
+        return IMMessage(sender=sender, message_elements=segments, raw_message={})
 
-    def convert_to_message_segment(self, message: Message) -> OneBotMessage:
+    def convert_to_message_segment(self, message: IMMessage) -> OneBotMessage:
         """将统一消息格式转换为 OneBot 消息"""
         onebot_message = OneBotMessage()
 
@@ -129,10 +129,10 @@ class OneBotAdapter(IMAdapter):
         try:
             logger.info(f"Starting OneBot adapter on {self.config.host}:{self.config.port}")
             loop = asyncio.new_event_loop()
-            
+
             # 启动心跳检测服务
             self._heartbeat_task = loop.create_task(self._check_heartbeats())
-            
+
             self._server_task = loop.create_task(self.bot.run_task(
                 host=self.config.host,
                 port=int(self.config.port)
@@ -152,7 +152,7 @@ class OneBotAdapter(IMAdapter):
                 await self._heartbeat_task
             except asyncio.CancelledError:
                 pass
-            
+
         if self._server_task:
             self._server_task.cancel()
             try:
@@ -163,7 +163,7 @@ class OneBotAdapter(IMAdapter):
             await self.bot._server_app.shutdown()
         logger.info("OneBot adapter stopped")
 
-    async def send_message(self, self_id: int, chat_id: str, message: Message):
+    async def send_message(self, self_id: int, chat_id: str, message: IMMessage):
         """发送消息"""
         onebot_message = self.convert_to_message_segment(message)
         message_type = 'private' if chat_id.startswith('private_') else 'group'
