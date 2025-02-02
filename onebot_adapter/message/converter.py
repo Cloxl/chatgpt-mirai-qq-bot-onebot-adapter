@@ -1,6 +1,9 @@
 from typing import Any
 
-from framework.im.message import TextMessage
+from framework.im.message import TextMessage, IMMessage
+from aiocqhttp import Event
+
+from plugins.onebot_adapter.onebot_adapter.message.media import create_message_element
 
 
 def degrade_to_text(element: Any) -> TextMessage:
@@ -25,3 +28,28 @@ def degrade_to_text(element: Any) -> TextMessage:
         return TextMessage(f"[JSON消息:{element.data}]")
 
     return TextMessage("[不支持的消息类型]")
+
+
+class MessageConverter:
+    """消息转换器，用于OneBot消息和IMMessage之间的转换"""
+    
+    def to_internal(self, event: Event) -> IMMessage:
+        """将 OneBot 消息转换为统一消息格式"""
+        segments = []
+        
+        # 构造 sender
+        if event.get('group_id'):
+            sender = f"group_{event.get('group_id')}"
+        else:
+            sender = f"private_{event.get('user_id')}"
+        
+        for msg in event['message']:
+            element = create_message_element(msg['type'], msg['data'])
+            if element:
+                segments.append(element)
+        
+        return IMMessage(
+            sender=sender,
+            message_elements=segments,
+            raw_message={}
+        )
