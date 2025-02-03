@@ -9,7 +9,7 @@ from aiocqhttp import Message as OneBotMessage
 from aiocqhttp import MessageSegment
 
 from framework.im.adapter import IMAdapter
-from framework.im.message import IMMessage
+from framework.im.message import IMMessage, AtElement, TextElement
 from framework.logger import get_logger
 from framework.workflow_dispatcher.workflow_dispatcher import WorkflowDispatcher
 from .config import OneBotConfig
@@ -281,9 +281,22 @@ class OneBotAdapter(IMAdapter):
             return result
 
     async def send_at_message(self, group_id: str, user_id: str, message: str):
-        """发送@消息"""
-        at_msg = f"[CQ:at,qq={user_id}] {message}"
-        await self.send_message(at_msg)
+        """发送@消息
+        
+        Args:
+            group_id: 群号
+            user_id: 要@的用户ID 
+            message: 消息内容
+        """
+        msg = IMMessage(
+            sender=f"group_{group_id}",
+            message_elements=[
+                AtElement(user_id),
+                TextElement(" " + message)
+            ]
+        )
+        
+        await self.send_message(msg, f"group_{group_id}")
 
     # 管理操作
     async def mute_user(self, group_id: int, user_id: int, duration: int):
