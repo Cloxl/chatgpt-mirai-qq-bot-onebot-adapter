@@ -2,7 +2,7 @@ import asyncio
 import functools
 import os
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional
 
 from aiocqhttp import CQHttp, Event
 from aiocqhttp import Message as OneBotMessage
@@ -15,7 +15,6 @@ from framework.workflow_dispatcher.workflow_dispatcher import WorkflowDispatcher
 from .config import OneBotConfig
 from .handlers.event_filter import EventFilter
 from .handlers.message_result import MessageResult
-from .message.converter import MessageConverter
 from .message.media import create_message_element
 
 logger = get_logger("OneBot")
@@ -27,7 +26,6 @@ class OneBotAdapter(IMAdapter):
         self.config = config  # 配置
         self.dispatcher = dispatcher  # 工作流调度器
         self.bot = CQHttp()  # 初始化CQHttp
-        self.converter = MessageConverter()  # 消息转换器
 
         # 从配置获取过滤规则文件路径
         filter_path = os.path.join(
@@ -83,18 +81,23 @@ class OneBotAdapter(IMAdapter):
         if not self.event_filter.should_handle(event):
             return
 
-        message = self.converter.to_internal(event)
+        message = self.convert_to_message(event)
 
         await self.dispatcher.dispatch(self, message)
 
     async def handle_notice(self, event: Event):
         """处理通知事件"""
         pass
-    
+
     def convert_to_message(self, event) -> IMMessage:
         """将 OneBot 消息转换为统一消息格式"""
         segments = []
-        sender = event.get('sender', {}).get('nickname', '') or str(event.get('user_id', ''))
+
+        # 构造sender
+        if event.get('group_id'):
+            sender = f"group_{event.get('group_id')}"
+        else:
+            sender = f"private_{event.get('user_id')}"
 
         for msg in event['message']:
             element = create_message_element(msg['type'], msg['data'])
@@ -197,15 +200,15 @@ class OneBotAdapter(IMAdapter):
                     logger.warning(f"Error shutting down Hypercorn server: {e}")
 
             # 5. 取消所有相关任务
-            tasks = [t for t in asyncio.all_tasks() 
-                    if any(name in str(t) for name in ['hypercorn', 'quart', 'websocket'])
-                    and not t.done()]
-            
+            tasks = [t for t in asyncio.all_tasks()
+                     if any(name in str(t) for name in ['hypercorn', 'quart', 'websocket'])
+                     and not t.done()]
+
             if tasks:
                 # 取消任务
                 for task in tasks:
                     task.cancel()
-                
+
                 # 等待任务取消完成
                 try:
                     await asyncio.wait(tasks, timeout=2.0)
@@ -214,7 +217,7 @@ class OneBotAdapter(IMAdapter):
 
             # 6. 清理状态
             self.heartbeat_states.clear()
-            
+
             logger.info("OneBot adapter stopped")
         except Exception as e:
             logger.error(f"Error stopping OneBot adapter: {e}")
@@ -231,11 +234,11 @@ class OneBotAdapter(IMAdapter):
         await self.bot.delete_msg(message_id=message_id)
 
     async def send_message(
-        self,
-        message: IMMessage,
-        target_id: str,
-        reply_id: Optional[int] = None,
-        delete_after: Optional[int] = None
+            self,
+            message: IMMessage,
+            target_id: str,
+            reply_id: Optional[int] = None,
+            delete_after: Optional[int] = None
     ) -> MessageResult:
         """发送消息"""
         result = MessageResult()
@@ -253,12 +256,12 @@ class OneBotAdapter(IMAdapter):
             # 发送消息
             api_func = self.bot.send_private_msg if message_type == 'private' else self.bot.send_group_msg
             target_key = 'user_id' if message_type == 'private' else 'group_id'
-            
+
             send_result = await api_func(
                 **{target_key: target_id},
                 message=onebot_message
             )
-            
+
             result.message_id = send_result.get('message_id')
             result.raw_results.append({"action": "send", "result": send_result})
 
@@ -266,7 +269,7 @@ class OneBotAdapter(IMAdapter):
             if delete_after and result.message_id:
                 await asyncio.create_task(
                     self.recall_message(
-                        result.message_id, 
+                        result.message_id,
                         delay=delete_after
                     )
                 )
@@ -290,11 +293,11 @@ class OneBotAdapter(IMAdapter):
             user_id=user_id,
             duration=duration
         )
-    
+
     async def unmute_user(self, group_id: int, user_id: int):
         """解除禁言"""
         await self.mute_user(group_id, user_id, 0)
-        
+
     async def kick_user(self, group_id: int, user_id: int):
         """踢出用户"""
         await self.bot.set_group_kick(
