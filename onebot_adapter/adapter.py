@@ -219,23 +219,6 @@ class OneBotAdapter(IMAdapter):
         except Exception as e:
             logger.error(f"Error stopping OneBot adapter: {e}")
 
-    async def _delayed_recall(
-            self,
-            message_id: int,
-            delay: int,
-            results_list: List[Dict[str, Any]]
-    ):
-        """带结果记录的延迟撤回"""
-        try:
-            await asyncio.sleep(delay)
-            recall_result = await self.bot.delete_msg(message_id=message_id)
-            results_list.append({"action": "delayed_recall", "result": recall_result})
-        except Exception as e:
-            results_list.append({
-                "action": "delayed_recall",
-                "error": str(e)
-            })
-
     async def recall_message(self, message_id: int, delay: int = 0):
         """撤回消息
         
