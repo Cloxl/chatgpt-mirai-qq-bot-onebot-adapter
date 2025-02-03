@@ -1,7 +1,7 @@
 import asyncio
+import functools
 import os
 import time
-import functools
 from typing import Optional, List, Dict, Any
 
 from aiocqhttp import CQHttp, Event
@@ -9,15 +9,14 @@ from aiocqhttp import Message as OneBotMessage
 from aiocqhttp import MessageSegment
 
 from framework.im.adapter import IMAdapter
-from framework.im.message import IMMessage, TextMessage
+from framework.im.message import IMMessage
 from framework.logger import get_logger
 from framework.workflow_dispatcher.workflow_dispatcher import WorkflowDispatcher
-
 from .config import OneBotConfig
 from .handlers.event_filter import EventFilter
-from .message.media import create_message_element
 from .handlers.message_result import MessageResult
 from .message.converter import MessageConverter
+from .message.media import create_message_element
 
 logger = get_logger("OneBot")
 
@@ -25,37 +24,42 @@ logger = get_logger("OneBot")
 class OneBotAdapter(IMAdapter):
     def __init__(self, config: OneBotConfig, dispatcher: WorkflowDispatcher):
         super().__init__()
-        self.config = config
-        self.dispatcher = dispatcher
-        self.bot = CQHttp()
-        self.converter = MessageConverter()
+        self.config = config  # 配置
+        self.dispatcher = dispatcher  # 工作流调度器
+        self.bot = CQHttp()  # 初始化CQHttp
+        self.converter = MessageConverter()  # 消息转换器
 
         # 从配置获取过滤规则文件路径
         filter_path = os.path.join(
             os.path.dirname(__file__),
-            self.config.filter_file
+            self.config.filter_file  # 过滤规则文件路径
         )
-        self.event_filter = EventFilter(filter_path)
+        self.event_filter = EventFilter(filter_path)  # 事件过滤器
 
-        self._server_task = None
+        self._server_task = None  # 反向ws任务
         self.heartbeat_states = {}  # 存储每个 bot 的心跳状态
-        self.heartbeat_timeout = self.config.heartbeat_interval
-        self._heartbeat_task = None
+        self.heartbeat_interval = self.config.heartbeat_interval  # 心跳间隔
+        self.heartbeat_timeout = self.config.heartbeat_interval  # 心跳超时
+        self._heartbeat_task = None  # 心跳检查任务
 
-        # 注册消息处理器
-        self.bot.on_meta_event(self._handle_meta)
-        self.bot.on_notice(self.handle_notice)
-        self.bot.on_message(self._handle_msg)
+        # 注册事件处理器
+        self.bot.on_meta_event(self._handle_meta)  # 元事件处理器
+        self.bot.on_notice(self.handle_notice)  # 通知处理器
+        self.bot.on_message(self._handle_msg)  # 消息处理器
 
     async def _check_heartbeats(self):
-        """检查所有连接的心跳状态"""
+        """
+        检查所有连接的心跳状态
+
+        兼容一些不发送disconnect事件的bot平台
+        """
         while True:
             current_time = time.time()
             for self_id, last_time in list(self.heartbeat_states.items()):
                 if current_time - last_time > self.heartbeat_timeout:
                     logger.warning(f"Bot {self_id} disconnected (heartbeat timeout)")
                     self.heartbeat_states.pop(self_id, None)
-            await asyncio.sleep(5)  # 每5秒检查一次
+            await asyncio.sleep(self.heartbeat_interval)
 
     async def _handle_meta(self, event):
         """处理元事件"""
@@ -65,7 +69,9 @@ class OneBotAdapter(IMAdapter):
             if event.get('sub_type') == 'connect':
                 logger.info(f"Bot {self_id} connected")
                 self.heartbeat_states[self_id] = time.time()
+
             elif event.get('sub_type') == 'disconnect':
+                # 当bot断开连接时,  停止该bot的事件处理
                 logger.info(f"Bot {self_id} disconnected")
                 self.heartbeat_states.pop(self_id, None)
 
@@ -82,8 +88,9 @@ class OneBotAdapter(IMAdapter):
         await self.dispatcher.dispatch(self, message)
 
     async def handle_notice(self, event: Event):
+        """处理通知事件"""
         pass
-
+    
     def convert_to_message(self, event) -> IMMessage:
         """将 OneBot 消息转换为统一消息格式"""
         segments = []
@@ -138,12 +145,6 @@ class OneBotAdapter(IMAdapter):
                 host=self.config.host,
                 port=int(self.config.port)
             ))
-
-            # 设置消息处理器
-            @self.bot.on_message
-            async def handle_msg(event):
-                message = self.converter.to_internal(event)
-                await self.dispatcher.dispatch(self, message)
 
             logger.info(f"OneBot adapter started")
         except Exception as e:
@@ -256,14 +257,11 @@ class OneBotAdapter(IMAdapter):
         """发送消息"""
         result = MessageResult()
         try:
-            logger.debug(f"OneBotAdapter sending message to {target_id}")
-            
             message_type, target_id = target_id.split('_')
             target_id = int(target_id)
 
             # 转换消息格式
             onebot_message = self.convert_to_message_segment(message)
-            logger.debug(f"Converted message: {onebot_message}")
 
             # 添加回复
             if reply_id:
