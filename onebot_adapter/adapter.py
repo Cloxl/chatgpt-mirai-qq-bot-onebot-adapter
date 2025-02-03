@@ -39,7 +39,7 @@ class OneBotAdapter(IMAdapter):
         self._server_task = None  # 反向ws任务
         self.heartbeat_states = {}  # 存储每个 bot 的心跳状态
         self.heartbeat_interval = self.config.heartbeat_interval  # 心跳间隔
-        self.heartbeat_timeout = self.config.heartbeat_interval  # 心跳超时
+        self.heartbeat_timeout = self.config.heartbeat_interval * 2  # 心跳超时
         self._heartbeat_task = None  # 心跳检查任务
 
         # 注册事件处理器
