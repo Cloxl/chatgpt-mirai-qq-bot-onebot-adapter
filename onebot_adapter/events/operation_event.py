@@ -9,8 +9,6 @@ class OperationType(Enum):
     KICK = auto()      # 踢出
     RECALL = auto()    # 撤回
     AT = auto()        # @用户
-    PIN = auto()       # 置顶消息
-    UNPIN = auto()     # 取消置顶
 
 
 @dataclass
