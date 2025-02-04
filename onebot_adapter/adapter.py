@@ -1,19 +1,19 @@
 import asyncio
 import functools
-import os
 import time
-from typing import Optional
 
 from aiocqhttp import CQHttp, Event
 from aiocqhttp import Message as OneBotMessage
 from aiocqhttp import MessageSegment
-
 from framework.im.adapter import IMAdapter
-from framework.im.message import IMMessage, AtElement, TextElement
+from framework.im.message import IMMessage, TextMessage
+from framework.im.sender import ChatSender, ChatType
 from framework.logger import get_logger
-from framework.workflow_dispatcher.workflow_dispatcher import WorkflowDispatcher
+from framework.workflow.core.dispatch.dispatcher import WorkflowDispatcher
+
 from .config import OneBotConfig
 from .handlers.message_result import MessageResult
+from .message.base import AtElement
 from .message.media import create_message_element
 
 logger = get_logger("OneBot")
@@ -51,7 +51,7 @@ class OneBotAdapter(IMAdapter):
                     self.heartbeat_states.pop(self_id, None)
             await asyncio.sleep(self.heartbeat_interval)
 
-    async def _handle_meta(self, event):
+    async def _handle_meta(self, event: Event):
         """处理元事件"""
         self_id = event.self_id
 
@@ -68,7 +68,7 @@ class OneBotAdapter(IMAdapter):
         elif event.get('meta_event_type') == 'heartbeat':
             self.heartbeat_states[self_id] = time.time()
 
-    async def _handle_msg(self, event):
+    async def _handle_msg(self, event: Event):
         """处理消息的回调函数"""
         message = self.convert_to_message(event)
 
@@ -78,26 +78,40 @@ class OneBotAdapter(IMAdapter):
         """处理通知事件"""
         pass
 
-    def convert_to_message(self, event) -> IMMessage:
+    def convert_to_message(self, event: Event) -> IMMessage:
         """将 OneBot 消息转换为统一消息格式"""
-        segments = []
-
-        # 构造sender
-        if event.get('group_id'):
-            sender = f"group_{event.get('group_id')}"
+        # 构造发送者信息 - 使用 ChatSender
+        sender_info = event.sender or {}
+        if event.group_id:
+            sender = ChatSender.from_group_chat(
+                user_id=str(event.user_id),
+                group_id=str(event.group_id),
+                display_name=sender_info.get('nickname', str(event.user_id))
+            )
         else:
-            sender = f"private_{event.get('user_id')}"
+            sender = ChatSender.from_c2c_chat(
+                user_id=str(event.user_id),
+                display_name=sender_info.get('nickname', str(event.user_id))
+            )
 
-        for msg in event['message']:
-            element = create_message_element(msg['type'], msg['data'])
+        # 转换消息元素
+        message_elements = []
+        for msg in event.message:
+            try:
+                element = create_message_element(msg['type'], msg['data'])
+                if element:
+                    message_elements.append(element)
+            except Exception as e:
+                logger.error(f"Failed to convert message element: {e}")
 
-            if element:
-                segments.append(element)
-
-        return IMMessage(sender=sender, message_elements=segments, raw_message={})
+        return IMMessage(
+            sender=sender,
+            message_elements=message_elements,
+            raw_message=event
+        )
 
     def convert_to_message_segment(self, message: IMMessage) -> OneBotMessage:
-        """将统一消息格式转换为 OneBot 消息"""
+        """将统一消息格式转换为 OneBot 消息段"""
         onebot_message = OneBotMessage()
 
         # 消息类型到转换方法的映射
@@ -114,10 +128,10 @@ class OneBotAdapter(IMAdapter):
         }
 
         for element in message.message_elements:
-            data = element.to_dict()
-            msg_type = data['type']
-
             try:
+                data = element.to_dict()
+                msg_type = data['type']
+                
                 if msg_type in segment_converters:
                     segment = segment_converters[msg_type](data)
                     onebot_message.append(segment)
@@ -222,87 +236,71 @@ class OneBotAdapter(IMAdapter):
             await asyncio.sleep(delay)
         await self.bot.delete_msg(message_id=message_id)
 
-    async def send_message(
-            self,
-            message: IMMessage,
-            target_id: str,
-            reply_id: Optional[int] = None,
-            delete_after: Optional[int] = None
-    ) -> MessageResult:
+    async def send_message(self, message: IMMessage, recipient: ChatSender) -> MessageResult:
         """发送消息"""
         result = MessageResult()
         try:
-            message_type, target_id = target_id.split('_')
-            target_id = int(target_id)
-
-            # 转换消息格式
             onebot_message = self.convert_to_message_segment(message)
 
-            # 添加回复
-            if reply_id:
-                onebot_message = MessageSegment.reply(reply_id) + onebot_message
-
-            # 发送消息
-            api_func = self.bot.send_private_msg if message_type == 'private' else self.bot.send_group_msg
-            target_key = 'user_id' if message_type == 'private' else 'group_id'
-
-            send_result = await api_func(
-                **{target_key: target_id},
-                message=onebot_message
-            )
+            if recipient.chat_type == ChatType.GROUP:
+                send_result = await self.bot.send_group_msg(
+                    group_id=int(recipient.group_id),
+                    message=onebot_message
+                )
+            else:
+                send_result = await self.bot.send_private_msg(
+                    user_id=int(recipient.user_id),
+                    message=onebot_message
+                )
 
             result.message_id = send_result.get('message_id')
             result.raw_results.append({"action": "send", "result": send_result})
-
-            # 处理延迟撤回
-            if delete_after and result.message_id:
-                await asyncio.create_task(
-                    self.recall_message(
-                        result.message_id,
-                        delay=delete_after
-                    )
-                )
-
             return result
+
         except Exception as e:
             result.success = False
             result.error = f"Error in send_message: {str(e)}"
             return result
 
     async def send_at_message(self, group_id: str, user_id: str, message: str):
-        """发送@消息
+        """发送@消息"""
+        bot_sender = ChatSender.from_group_chat(
+            user_id="<@bot>",
+            group_id=group_id,
+            display_name="Bot"
+        )
         
-        Args:
-            group_id: 群号
-            user_id: 要@的用户ID 
-            message: 消息内容
-        """
         msg = IMMessage(
-            sender=f"group_{group_id}",
+            sender=bot_sender,
             message_elements=[
                 AtElement(user_id),
-                TextElement(" " + message)
+                TextMessage(" " + message)
             ]
         )
         
-        await self.send_message(msg, f"group_{group_id}")
+        recipient = ChatSender.from_group_chat(
+            user_id="<@bot>",
+            group_id=group_id,
+            display_name="Bot"
+        )
+        
+        await self.send_message(msg, recipient)
 
-    # 管理操作
-    async def mute_user(self, group_id: int, user_id: int, duration: int):
+    async def mute_user(self, group_id: str, user_id: str, duration: int):
         """禁言用户"""
         await self.bot.set_group_ban(
-            group_id=group_id,
-            user_id=user_id,
+            group_id=int(group_id),
+            user_id=int(user_id),
             duration=duration
         )
 
-    async def unmute_user(self, group_id: int, user_id: int):
+    async def unmute_user(self, group_id: str, user_id: str):
         """解除禁言"""
         await self.mute_user(group_id, user_id, 0)
 
-    async def kick_user(self, group_id: int, user_id: int):
+    async def kick_user(self, group_id: str, user_id: str):
         """踢出用户"""
         await self.bot.set_group_kick(
-            group_id=group_id,
-            user_id=user_id,
+            group_id=int(group_id),
+            user_id=int(user_id)
         )
