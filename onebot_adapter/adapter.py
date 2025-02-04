@@ -128,15 +128,6 @@ class OneBotAdapter(IMAdapter):
             'json': lambda data: MessageSegment.json(data['data']['data'])
         }
 
-        # 改进日志输出
-        debug_elements = []
-        for element in message.message_elements:
-            if isinstance(element, TextMessage):
-                debug_elements.append(f"Text: {element.text}")
-            else:
-                debug_elements.append(f"{element.__class__.__name__}: {element.to_dict()}")
-        logger.debug(f"消息转换前: {debug_elements}")
-
         for element in message.message_elements:
             try:
                 data = element.to_dict()
@@ -148,7 +139,6 @@ class OneBotAdapter(IMAdapter):
             except Exception as e:
                 logger.error(f"Failed to convert message segment type {msg_type}: {e}")
 
-        logger.debug(f"消息转换后: {segments}")
         return segments
 
     async def start(self):
