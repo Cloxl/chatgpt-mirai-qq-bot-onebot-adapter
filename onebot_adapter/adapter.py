@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import time
+import random  # 添加到文件顶部
 
 from aiocqhttp import CQHttp, Event
 from aiocqhttp import Message as OneBotMessage
@@ -80,7 +81,7 @@ class OneBotAdapter(IMAdapter):
 
     def convert_to_message(self, event: Event) -> IMMessage:
         """将 OneBot 消息转换为统一消息格式"""
-        # 构造发送者信息 - 使用 ChatSender
+        # 构造发送者信息
         sender_info = event.sender or {}
         if event.group_id:
             sender = ChatSender.from_group_chat(
@@ -110,9 +111,9 @@ class OneBotAdapter(IMAdapter):
             raw_message=event
         )
 
-    def convert_to_message_segment(self, message: IMMessage) -> OneBotMessage:
-        """将统一消息格式转换为 OneBot 消息段"""
-        onebot_message = OneBotMessage()
+    def convert_to_message_segment(self, message: IMMessage) -> list[MessageSegment]:
+        """将统一消息格式转换为 OneBot 消息段列表"""
+        segments = []
 
         # 消息类型到转换方法的映射
         segment_converters = {
@@ -127,6 +128,15 @@ class OneBotAdapter(IMAdapter):
             'json': lambda data: MessageSegment.json(data['data']['data'])
         }
 
+        # 改进日志输出
+        debug_elements = []
+        for element in message.message_elements:
+            if isinstance(element, TextMessage):
+                debug_elements.append(f"Text: {element.text}")
+            else:
+                debug_elements.append(f"{element.__class__.__name__}: {element.to_dict()}")
+        logger.debug(f"消息转换前: {debug_elements}")
+
         for element in message.message_elements:
             try:
                 data = element.to_dict()
@@ -134,11 +144,12 @@ class OneBotAdapter(IMAdapter):
                 
                 if msg_type in segment_converters:
                     segment = segment_converters[msg_type](data)
-                    onebot_message.append(segment)
+                    segments.append(segment)
             except Exception as e:
                 logger.error(f"Failed to convert message segment type {msg_type}: {e}")
 
-        return onebot_message
+        logger.debug(f"消息转换后: {segments}")
+        return segments
 
     async def start(self):
         """启动适配器"""
@@ -240,21 +251,31 @@ class OneBotAdapter(IMAdapter):
         """发送消息"""
         result = MessageResult()
         try:
-            onebot_message = self.convert_to_message_segment(message)
+            segments = self.convert_to_message_segment(message)
 
-            if recipient.chat_type == ChatType.GROUP:
-                send_result = await self.bot.send_group_msg(
-                    group_id=int(recipient.group_id),
-                    message=onebot_message
-                )
-            else:
-                send_result = await self.bot.send_private_msg(
-                    user_id=int(recipient.user_id),
-                    message=onebot_message
-                )
+            for i, segment in enumerate(segments):
+                # 如果不是第一条消息,添加随机延时
+                if i > 0:
+                    # 获取消息内容长度(如果是文本)
+                    content_length = len(str(segment)) if isinstance(segment, MessageSegment) else 10
+                    # 根据内容长度和随机因子计算延时
+                    duration = content_length * 0.1 + random.uniform(0.5, 1.5)
+                    await asyncio.sleep(duration)
 
-            result.message_id = send_result.get('message_id')
-            result.raw_results.append({"action": "send", "result": send_result})
+                if recipient.chat_type == ChatType.GROUP:
+                    send_result = await self.bot.send_group_msg(
+                        group_id=int(recipient.group_id),
+                        message=segment
+                    )
+                else:
+                    send_result = await self.bot.send_private_msg(
+                        user_id=int(recipient.user_id),
+                        message=segment
+                    )
+
+                result.message_id = send_result.get('message_id')
+                result.raw_results.append({"action": "send", "result": send_result})
+
             return result
 
         except Exception as e:
