@@ -13,7 +13,6 @@ from framework.im.message import IMMessage, AtElement, TextElement
 from framework.logger import get_logger
 from framework.workflow_dispatcher.workflow_dispatcher import WorkflowDispatcher
 from .config import OneBotConfig
-from .handlers.event_filter import EventFilter
 from .handlers.message_result import MessageResult
 from .message.media import create_message_element
 
@@ -26,13 +25,6 @@ class OneBotAdapter(IMAdapter):
         self.config = config  # 配置
         self.dispatcher = dispatcher  # 工作流调度器
         self.bot = CQHttp()  # 初始化CQHttp
-
-        # 从配置获取过滤规则文件路径
-        filter_path = os.path.join(
-            os.path.dirname(__file__),
-            self.config.filter_file  # 过滤规则文件路径
-        )
-        self.event_filter = EventFilter(filter_path)  # 事件过滤器
 
         self._server_task = None  # 反向ws任务
         self.heartbeat_states = {}  # 存储每个 bot 的心跳状态
@@ -78,9 +70,6 @@ class OneBotAdapter(IMAdapter):
 
     async def _handle_msg(self, event):
         """处理消息的回调函数"""
-        if not self.event_filter.should_handle(event):
-            return
-
         message = self.convert_to_message(event)
 
         await self.dispatcher.dispatch(self, message)
@@ -224,7 +213,7 @@ class OneBotAdapter(IMAdapter):
 
     async def recall_message(self, message_id: int, delay: int = 0):
         """撤回消息
-        
+
         Args:
             message_id: 要撤回的消息ID
             delay: 延迟撤回的时间(秒) 默认为0表示立即撤回
