@@ -22,62 +22,57 @@ ims:
       host: '0.0.0.0'             # OneBot服务器地址
       port: '5545'                # OneBot服务器端口
       access_token: ''            # OneBot服务器访问令牌
-      filter_file: 'filter.json'  # 事件过滤器文件
       heartbeat_interval: '15'    # 心跳间隔(秒)
     ... # 其他IM配置
 ```
 
-什么是`filter.json`？
-
-`filter.json` 是`事件过滤器`用于过滤消息的规则文件，具体请参考 [CQHTTP-API](https://github.com/kyubotics/coolq-http-api/blob/master/docs/4.15/EventFilter.md)
-
 ## 项目工作原理
 ```mermaid
 sequenceDiagram
-    participant 客户端 as OneBot Client
-    participant 适配器 as OneBotAdapter
-    participant 过滤器 as EventFilter
-    participant 消息处理 as MessageHandler
-    participant 命令处理 as CommandHandler
-    participant 消息转换 as MessageConverter
+    participant Client as OneBot Client
+    participant Adapter as OneBotAdapter
+    participant Dispatcher as WorkflowDispatcher
+    participant Memory as MemorySystem
+    participant LLM as LLMService
 
-    客户端->>适配器: WebSocket消息
-    适配器->>适配器: 处理消息事件
-    适配器->>过滤器: 检查是否需要处理
-
-    alt 通过过滤
-        过滤器-->>适配器: 返回true
-        适配器->>消息处理: 转换为统一消息格式
-        消息处理-->>适配器: 返回Message对象
-        Note over 适配器: 提取会话ID和文本内容
-        适配器->>命令处理: 解析命令
-
-        alt 是命令消息
-            命令处理-->>适配器: 返回命令和参数
-            适配器->>适配器: 处理命令
-            Note over 适配器: 创建响应消息
-        else 普通消息
-            命令处理-->>适配器: 返回空字符串
-            适配器->>适配器: 处理普通消息
+    Client->>Adapter: WebSocket消息
+    Note over Adapter: 心跳检测
+    
+    alt 元事件
+        Adapter->>Adapter: _handle_meta
+        Note over Adapter: 更新连接状态
+    else 消息事件
+        Adapter->>Adapter: _handle_msg
+        Adapter->>Adapter: convert_to_message
+        Note over Adapter: 转换为IMMessage格式
+        
+        Adapter->>Dispatcher: dispatch
+        
+        alt 工作流匹配
+            Dispatcher->>Memory: 查询历史记录
+            Memory-->>Dispatcher: 返回对话历史
+            Dispatcher->>LLM: 请求响应
+            LLM-->>Dispatcher: 返回AI回复
+            Dispatcher-->>Adapter: 返回处理结果
+            
+            Adapter->>Adapter: convert_to_message_segment
+            Note over Adapter: 转换为OneBot消息段
+            
+            loop 每个消息段
+                Note over Adapter: 添加随机延时
+                alt 群消息
+                    Adapter->>Client: send_group_msg
+                else 私聊消息
+                    Adapter->>Client: send_private_msg
+                end
+            end
+            
+        else 无匹配工作流
+            Note over Dispatcher: 跳过处理
         end
-
-        Note over 适配器: 创建文本消息响应
-        适配器->>消息转换: 转换为OneBot消息格式
-        Note over 消息转换: 转换各种消息元素
-        消息转换-->>适配器: 返回OneBot消息
-
-        alt 私聊消息
-            适配器->>客户端: 发送私聊消息
-        else 群聊消息
-            适配器->>客户端: 发送群聊消息
-        end
-
-        客户端-->>适配器: 消息发送完成
-
-    else 被过滤
-        过滤器-->>适配器: 返回false
-        Note over 适配器: 忽略该消息
     end
+
+    Client-->>Adapter: 消息处理完成
 ```
 
 ## 开源协议
