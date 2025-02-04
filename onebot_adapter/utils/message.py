@@ -26,7 +26,7 @@ def create_message_element(msg_type: str, data: dict) -> Optional[MessageElement
         'text': lambda: TextMessage(data['text']),
         'at': lambda: AtElement(data['qq']),
         'reply': lambda: ReplyElement(data['id']),
-        'file': lambda: FileElement(data['file']),
+        'file': lambda: FileElement(url=file) if file else None,
         'json': lambda: JsonElement(data['data']),
         'face': lambda: FaceElement(data['id']),
         'image': lambda: ImageMessage(url=file) if file else None,
