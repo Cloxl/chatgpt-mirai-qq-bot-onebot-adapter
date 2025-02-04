@@ -1,26 +1,11 @@
 from typing import Optional
-
-from framework.im.message import ImageMessage, MediaMessage, MessageElement, TextMessage, VoiceMessage
+from framework.im.message import (
+    ImageMessage, MediaMessage, MessageElement, TextMessage, VoiceMessage,
+    AtElement, FaceElement, FileElement, JsonElement, ReplyElement, VideoElement
+)
 from framework.logger import get_logger
 
-from .base import AtElement, FaceElement, FileElement, JsonElement, ReplyElement
-
 logger = get_logger("OneBot")
-
-
-class VideoElement(MessageElement):
-    """视频消息元素"""
-    def __init__(self, file: str):
-        self.file = file
-
-    def to_dict(self):
-        return {
-            "type": "video",
-            "data": {
-                "file": self.file
-            }
-        }
-
 
 def create_message_element(msg_type: str, data: dict) -> Optional[MessageElement | MediaMessage]:
     """
@@ -55,4 +40,4 @@ def create_message_element(msg_type: str, data: dict) -> Optional[MessageElement
     except Exception as e:
         logger.error(f"Failed to create message element for type {msg_type}: {e}")
     
-    return None
+    return None 

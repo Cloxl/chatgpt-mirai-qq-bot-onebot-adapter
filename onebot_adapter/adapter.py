@@ -1,21 +1,19 @@
 import asyncio
 import functools
 import time
-import random  # 添加到文件顶部
+import random
 
 from aiocqhttp import CQHttp, Event
-from aiocqhttp import Message as OneBotMessage
 from aiocqhttp import MessageSegment
 from framework.im.adapter import IMAdapter
-from framework.im.message import IMMessage, TextMessage
+from framework.im.message import IMMessage, TextMessage, AtElement
 from framework.im.sender import ChatSender, ChatType
 from framework.logger import get_logger
 from framework.workflow.core.dispatch.dispatcher import WorkflowDispatcher
 
 from .config import OneBotConfig
 from .handlers.message_result import MessageResult
-from .message.base import AtElement
-from .message.media import create_message_element
+from .utils.message import create_message_element
 
 logger = get_logger("OneBot")
 

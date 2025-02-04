@@ -8,7 +8,6 @@ class OneBotConfig(BaseModel):
     host: str = Field(default="127.0.0.1", description="OneBot 服务器地址")
     port: int = Field(default=5455, description="OneBot 服务器端口")
     access_token: Optional[str] = Field(default=None, description="访问令牌")
-    filter_file: str = Field(default="filter.json", description="过滤规则文件路径")
     heartbeat_interval: int = Field(default=15, description="心跳间隔 (秒)")
 
     class Config:
