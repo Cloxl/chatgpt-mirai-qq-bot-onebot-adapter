@@ -1,5 +1,4 @@
 from framework.logger import get_logger
-from framework.plugin_manager.plugin import Plugin
 from framework.workflow.core.dispatch.dispatcher import WorkflowDispatcher
 from framework.plugin_manager.plugin import Plugin
 from framework.im.im_registry import IMRegistry
@@ -11,18 +10,10 @@ logger = get_logger("OneBot-Adapter")
 
 class OneBotAdapterPlugin(Plugin):
     def __init__(self):
-        super().__init__()
-        self.name = "onebot_adapter"
-        self.description = "OneBot adapter for chatgpt-mirai-qq-bot"
-        self.version = "0.1.4"
-
-    def on_init(self):
-        """初始化插件"""
-        # 注册 OneBot 适配器
-        im_registry = self.container.resolve(IMRegistry)
-        im_registry.register("onebot", OneBotAdapter, OneBotConfig)
+        pass
 
     def on_load(self):
+
         class OneBotAdapterFactory:
             def __init__(self, dispatcher: WorkflowDispatcher):
                 self.dispatcher = dispatcher
