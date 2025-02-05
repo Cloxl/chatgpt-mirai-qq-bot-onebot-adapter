@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-from ..events.operation_event import OperationType  # 使用已有的枚举
+from ..events.operation_event import OperationType
 
 @dataclass
 class MessageResult:
@@ -9,7 +9,7 @@ class MessageResult:
     message_id: Optional[int] = None
     recalled_id: Optional[int] = None
     target_user_id: Optional[int] = None
-    operation_type: OperationType = OperationType.MUTE  # 使用 OperationType
+    operation_type: OperationType = OperationType.MUTE
     operation_duration: Optional[int] = None
     error: Optional[str] = None
     raw_results: List[Dict[str, Any]] = None
