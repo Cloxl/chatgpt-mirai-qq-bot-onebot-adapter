@@ -1,8 +1,8 @@
 from framework.logger import get_logger
 from framework.plugin_manager.plugin import Plugin
 from framework.workflow.core.dispatch.dispatcher import WorkflowDispatcher
-from .onebot_adapter.adapter import OneBotAdapter
-from .onebot_adapter.config import OneBotConfig
+from .adapter import OneBotAdapter
+from .config import OneBotConfig
 
 logger = get_logger("OneBot-Adapter")
 
