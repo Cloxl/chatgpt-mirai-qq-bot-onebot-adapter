@@ -1,11 +1,15 @@
 from setuptools import setup, find_packages
 import io
+import os
+
+version = os.environ.get('RELEASE_VERSION', '0.1.0').lstrip('v')
+
 setup(
     name="chatgpt-mirai-qq-bot-onebot-adapter",
-    version="0.1.0",
+    version=version,
     packages=find_packages(),
     install_requires=[
-        "aiocqhttp",
+        "aiocqhttp[all]>=1.4.4",
     ],
     author="Cloxl",
     author_email="cloxl2017@outlook.at",
