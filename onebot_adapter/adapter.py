@@ -1,16 +1,18 @@
 import asyncio
 import functools
-import time
 import random
+import time
+from typing import Optional
 
 from aiocqhttp import CQHttp, Event
 from aiocqhttp import MessageSegment
-from framework.im.adapter import IMAdapter
+
+from framework.im.adapter import IMAdapter, UserProfileAdapter
 from framework.im.message import IMMessage, TextMessage, AtElement
+from framework.im.profile import UserProfile, Gender
 from framework.im.sender import ChatSender, ChatType
 from framework.logger import get_logger
 from framework.workflow.core.dispatch.dispatcher import WorkflowDispatcher
-
 from .config import OneBotConfig
 from .handlers.message_result import MessageResult
 from .utils.message import create_message_element
@@ -18,7 +20,7 @@ from .utils.message import create_message_element
 logger = get_logger("OneBot")
 
 
-class OneBotAdapter(IMAdapter):
+class OneBotAdapter(IMAdapter, UserProfileAdapter):
     def __init__(self, config: OneBotConfig, dispatcher: WorkflowDispatcher):
         super().__init__()
         self.config = config  # 配置
@@ -35,6 +37,11 @@ class OneBotAdapter(IMAdapter):
         self.bot.on_meta_event(self._handle_meta)  # 元事件处理器
         self.bot.on_notice(self.handle_notice)  # 通知处理器
         self.bot.on_message(self._handle_msg)  # 消息处理器
+
+        # 添加用户资料缓存,TTL为1小时
+        self._profile_cache = {}  # 用户资料缓存
+        self._profile_cache_time = {}  # 缓存时间记录
+        self._cache_ttl = 3600  # 缓存过期时间(秒)
 
     async def _check_heartbeats(self):
         """
@@ -239,6 +246,14 @@ class OneBotAdapter(IMAdapter):
         """发送消息"""
         result = MessageResult()
         try:
+            # 只在发送者是 ChatSender 实例时才查询用户资料
+            if isinstance(message.sender, ChatSender):
+                try:
+                    profile = await self.query_user_profile(message.sender)
+                    logger.info(f"Test query profile result: {profile}")
+                except Exception as e:
+                    logger.error(f"Test query profile failed: {e}")
+
             segments = self.convert_to_message_segment(message)
 
             for i, segment in enumerate(segments):
@@ -313,3 +328,102 @@ class OneBotAdapter(IMAdapter):
             group_id=int(group_id),
             user_id=int(user_id)
         )
+
+    async def query_user_profile(self, chat_sender: ChatSender) -> UserProfile:
+        """查询用户资料"""
+        logger.info(f"Querying user profile for sender: {chat_sender}")
+        
+        user_id = chat_sender.user_id
+        group_id = chat_sender.group_id if chat_sender.chat_type == ChatType.GROUP else None
+        
+        cache_key = f"{user_id}:{group_id}" if group_id else user_id
+        
+        # 检查缓存是否存在且未过期
+        current_time = time.time()
+        if (cache_key in self._profile_cache and 
+            current_time - self._profile_cache_time.get(cache_key, 0) < self._cache_ttl):
+            logger.info(f"Cache hit for {cache_key}")
+            return self._profile_cache[cache_key]
+            
+        try:
+            # 获取群成员信息
+            if group_id:
+                logger.info(f"Fetching group member info for user_id={user_id} in group_id={group_id}")
+                info = await self.bot.get_group_member_info(
+                    group_id=int(group_id),
+                    user_id=int(user_id),
+                    no_cache=True
+                )
+                logger.info(f"Raw group member info: {info}")
+                profile = self._convert_group_member_info(info)
+            # 获取用户信息
+            else:
+                logger.info(f"Fetching stranger info for user_id={user_id}")
+                info = await self.bot.get_stranger_info(
+                    user_id=int(user_id),
+                    no_cache=True
+                )
+                logger.info(f"Raw stranger info: {info}")
+                profile = self._convert_stranger_info(info)
+            
+            # 更新缓存
+            self._profile_cache[cache_key] = profile
+            self._profile_cache_time[cache_key] = current_time
+            logger.info(f"Profile cached and returned: {profile}")
+            return profile
+            
+        except Exception as e:
+            logger.error(f"Failed to get user profile for {chat_sender}: {e}", exc_info=True)
+            # 在失败时返回一个基本的用户资料
+            return UserProfile(
+                user_id=user_id,
+                username=user_id,
+                display_name=chat_sender.display_name
+            )
+
+    def _convert_group_member_info(self, info: dict) -> UserProfile:
+        """转换群成员信息为通用格式"""
+        gender = Gender.UNKNOWN
+        if info.get('sex') == 'male':
+            gender = Gender.MALE
+        elif info.get('sex') == 'female':
+            gender = Gender.FEMALE
+
+        profile = UserProfile(
+            user_id=str(info.get('user_id')),
+            username=info.get('card') or info.get('nickname'),
+            display_name=info.get('card') or info.get('nickname'),
+            full_name=info.get('nickname'),
+            gender=gender,
+            age=info.get('age'),
+            level=info.get('level'),
+            avatar_url=info.get('avatar'),
+            extra_info={
+                'role': info.get('role'),
+                'title': info.get('title'),
+                'join_time': info.get('join_time'),
+                'last_sent_time': info.get('last_sent_time')
+            }
+        )
+        logger.info(f"Converted group member profile: {profile}")
+        return profile
+
+    def _convert_stranger_info(self, info: dict) -> UserProfile:
+        """转换陌生人信息为通用格式"""
+        gender = Gender.UNKNOWN
+        if info.get('sex') == 'male':
+            gender = Gender.MALE
+        elif info.get('sex') == 'female':
+            gender = Gender.FEMALE
+
+        profile = UserProfile(
+            user_id=str(info.get('user_id')),
+            username=info.get('nickname'),
+            display_name=info.get('nickname'),
+            gender=gender,
+            age=info.get('age'),
+            level=info.get('level'),
+            avatar_url=info.get('avatar')
+        )
+        logger.info(f"Converted stranger profile: {profile}")
+        return profile

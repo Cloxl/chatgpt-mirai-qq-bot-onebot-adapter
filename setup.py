@@ -11,6 +11,11 @@ setup(
     install_requires=[
         "aiocqhttp[all]>=1.4.4",
     ],
+    entry_points={
+        'chatgpt_qq_bot.plugins': [
+            'onebot_adapter = onebot_adapter:OneBotAdapterPlugin'
+        ]
+    },
     author="Cloxl",
     author_email="cloxl2017@outlook.at",
     description="OneBot adapter for lss233/chatgpt-mirai-qq-bot",
