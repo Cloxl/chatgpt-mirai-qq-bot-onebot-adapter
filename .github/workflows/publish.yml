@@ -10,9 +10,6 @@ permissions:
 jobs:
   release-build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./plugins/onebot_adapter
 
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +37,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: onebot-adapter-dists
-          path: plugins/onebot_adapter/dist/
+          path: dist/
 
   pypi-publish:
     runs-on: ubuntu-latest
@@ -63,4 +60,5 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: dist/ 
+          packages-dir: dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
