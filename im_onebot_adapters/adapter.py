@@ -2,31 +2,41 @@ import asyncio
 import functools
 import random
 import time
-from typing import Optional
 
 from aiocqhttp import CQHttp, Event
 from aiocqhttp import MessageSegment
+from hypercorn.asyncio import serve
+from hypercorn.config import Config
 
 from framework.im.adapter import IMAdapter, UserProfileAdapter
 from framework.im.message import IMMessage, TextMessage, AtElement
 from framework.im.profile import UserProfile, Gender
 from framework.im.sender import ChatSender, ChatType
-from framework.logger import get_logger
+from framework.logger import get_logger, HypercornLoggerWrapper
 from framework.workflow.core.dispatch.dispatcher import WorkflowDispatcher
 from .config import OneBotConfig
 from .handlers.message_result import MessageResult
 from .utils.message import create_message_element
 
-logger = get_logger("OneBot")
-
 
 class OneBotAdapter(IMAdapter, UserProfileAdapter):
     def __init__(self, config: OneBotConfig, dispatcher: WorkflowDispatcher):
+        # 初始化
         super().__init__()
         self.config = config  # 配置
         self.dispatcher = dispatcher  # 工作流调度器
         self.bot = CQHttp()  # 初始化CQHttp
+        self.logger = get_logger("OneBot")
 
+        # 配置 hypercorn
+        from hypercorn.logging import Logger
+        self.hypercorn_config = Config()
+        self.hypercorn_config.bind = [f"{self.config.host}:{self.config.port}"]
+        self.hypercorn_config._log = Logger(self.hypercorn_config)
+        self.hypercorn_config._log.access_logger = HypercornLoggerWrapper(self.logger)
+        self.hypercorn_config._log.error_logger = HypercornLoggerWrapper(self.logger)
+
+        # 初始化状态
         self._server_task = None  # 反向ws任务
         self.heartbeat_states = {}  # 存储每个 bot 的心跳状态
         self.heartbeat_interval = self.config.heartbeat_interval  # 心跳间隔
@@ -53,7 +63,7 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
             current_time = time.time()
             for self_id, last_time in list(self.heartbeat_states.items()):
                 if current_time - last_time > self.heartbeat_timeout:
-                    logger.warning(f"Bot {self_id} disconnected (heartbeat timeout)")
+                    self.logger.warning(f"Bot {self_id} disconnected (heartbeat timeout)")
                     self.heartbeat_states.pop(self_id, None)
             await asyncio.sleep(self.heartbeat_interval)
 
@@ -63,12 +73,12 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
 
         if event.get('meta_event_type') == 'lifecycle':
             if event.get('sub_type') == 'connect':
-                logger.info(f"Bot {self_id} connected")
+                self.logger.info(f"Bot {self_id} connected")
                 self.heartbeat_states[self_id] = time.time()
 
             elif event.get('sub_type') == 'disconnect':
                 # 当bot断开连接时,  停止该bot的事件处理
-                logger.info(f"Bot {self_id} disconnected")
+                self.logger.info(f"Bot {self_id} disconnected")
                 self.heartbeat_states.pop(self_id, None)
 
         elif event.get('meta_event_type') == 'heartbeat':
@@ -108,7 +118,7 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
                 if element:
                     message_elements.append(element)
             except Exception as e:
-                logger.error(f"Failed to convert message element: {e}")
+                self.logger.error(f"Failed to convert message element: {e}")
 
         return IMMessage(
             sender=sender,
@@ -142,25 +152,29 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
                     segment = segment_converters[msg_type](data)
                     segments.append(segment)
             except Exception as e:
-                logger.error(f"Failed to convert message segment type {msg_type}: {e}")
+                self.logger.error(f"Failed to convert message segment type {msg_type}: {e}")
 
         return segments
 
     async def start(self):
         """启动适配器"""
         try:
-            logger.info(f"Starting OneBot adapter on {self.config.host}:{self.config.port}")
+            self.logger.info(f"Starting OneBot adapter on {self.config.host}:{self.config.port}")
 
             # 使用现有的事件循环
             self._heartbeat_task = asyncio.create_task(self._check_heartbeats())
-            self._server_task = asyncio.create_task(self.bot.run_task(
-                host=self.config.host,
-                port=int(self.config.port)
-            ))
+            
+            # 获取 quart 应用实例
+            app = self.bot._server_app
+            
+            # 使用 hypercorn serve 启动 quart 应用
+            self._server_task = asyncio.create_task(
+                serve(app, self.hypercorn_config)
+            )
 
-            logger.info(f"OneBot adapter started")
+            self.logger.info(f"OneBot adapter started")
         except Exception as e:
-            logger.error(f"Failed to start OneBot adapter: {str(e)}")
+            self.logger.error(f"Failed to start OneBot adapter: {str(e)}")
             raise
 
     async def stop(self):
@@ -206,7 +220,7 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
                         await self.bot._server_app.shutdown()
 
                 except Exception as e:
-                    logger.warning(f"Error shutting down Hypercorn server: {e}")
+                    self.logger.warning(f"Error shutting down Hypercorn server: {e}")
 
             # 5. 取消所有相关任务
             tasks = [t for t in asyncio.all_tasks()
@@ -227,9 +241,9 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
             # 6. 清理状态
             self.heartbeat_states.clear()
 
-            logger.info("OneBot adapter stopped")
+            self.logger.info("OneBot adapter stopped")
         except Exception as e:
-            logger.error(f"Error stopping OneBot adapter: {e}")
+            self.logger.error(f"Error stopping OneBot adapter: {e}")
 
     async def recall_message(self, message_id: int, delay: int = 0):
         """撤回消息
@@ -250,9 +264,9 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
             if isinstance(message.sender, ChatSender):
                 try:
                     profile = await self.query_user_profile(message.sender)
-                    logger.info(f"Test query profile result: {profile}")
+                    self.logger.info(f"Test query profile result: {profile}")
                 except Exception as e:
-                    logger.error(f"Test query profile failed: {e}")
+                    self.logger.error(f"Test query profile failed: {e}")
 
             segments = self.convert_to_message_segment(message)
 
@@ -331,7 +345,7 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
 
     async def query_user_profile(self, chat_sender: ChatSender) -> UserProfile:
         """查询用户资料"""
-        logger.info(f"Querying user profile for sender: {chat_sender}")
+        self.logger.info(f"Querying user profile for sender: {chat_sender}")
         
         user_id = chat_sender.user_id
         group_id = chat_sender.group_id if chat_sender.chat_type == ChatType.GROUP else None
@@ -342,38 +356,38 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
         current_time = time.time()
         if (cache_key in self._profile_cache and 
             current_time - self._profile_cache_time.get(cache_key, 0) < self._cache_ttl):
-            logger.info(f"Cache hit for {cache_key}")
+            self.logger.info(f"Cache hit for {cache_key}")
             return self._profile_cache[cache_key]
             
         try:
             # 获取群成员信息
             if group_id:
-                logger.info(f"Fetching group member info for user_id={user_id} in group_id={group_id}")
+                self.logger.info(f"Fetching group member info for user_id={user_id} in group_id={group_id}")
                 info = await self.bot.get_group_member_info(
                     group_id=int(group_id),
                     user_id=int(user_id),
                     no_cache=True
                 )
-                logger.info(f"Raw group member info: {info}")
+                self.logger.info(f"Raw group member info: {info}")
                 profile = self._convert_group_member_info(info)
             # 获取用户信息
             else:
-                logger.info(f"Fetching stranger info for user_id={user_id}")
+                self.logger.info(f"Fetching stranger info for user_id={user_id}")
                 info = await self.bot.get_stranger_info(
                     user_id=int(user_id),
                     no_cache=True
                 )
-                logger.info(f"Raw stranger info: {info}")
+                self.logger.info(f"Raw stranger info: {info}")
                 profile = self._convert_stranger_info(info)
             
             # 更新缓存
             self._profile_cache[cache_key] = profile
             self._profile_cache_time[cache_key] = current_time
-            logger.info(f"Profile cached and returned: {profile}")
+            self.logger.info(f"Profile cached and returned: {profile}")
             return profile
             
         except Exception as e:
-            logger.error(f"Failed to get user profile for {chat_sender}: {e}", exc_info=True)
+            self.logger.error(f"Failed to get user profile for {chat_sender}: {e}", exc_info=True)
             # 在失败时返回一个基本的用户资料
             return UserProfile(
                 user_id=user_id,
@@ -405,7 +419,7 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
                 'last_sent_time': info.get('last_sent_time')
             }
         )
-        logger.info(f"Converted group member profile: {profile}")
+        self.logger.info(f"Converted group member profile: {profile}")
         return profile
 
     def _convert_stranger_info(self, info: dict) -> UserProfile:
@@ -425,5 +439,5 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
             level=info.get('level'),
             avatar_url=info.get('avatar')
         )
-        logger.info(f"Converted stranger profile: {profile}")
+        self.logger.info(f"Converted stranger profile: {profile}")
         return profile
