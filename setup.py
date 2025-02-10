@@ -13,7 +13,7 @@ setup(
     ],
     entry_points={
         'chatgpt_mirai.plugins': [
-            'onebot = im_onebot_adapters:OneBotAdapterPlugin'
+            'im_onebot_adapters = im_onebot_adapters:OneBotAdapterPlugin'
         ]
     },
     author="Cloxl",
