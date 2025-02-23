@@ -8,12 +8,12 @@ from aiocqhttp import MessageSegment
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 
-from framework.im.adapter import IMAdapter, UserProfileAdapter
-from framework.im.message import IMMessage, TextMessage, AtElement
-from framework.im.profile import UserProfile, Gender
-from framework.im.sender import ChatSender, ChatType
-from framework.logger import get_logger, HypercornLoggerWrapper
-from framework.workflow.core.dispatch.dispatcher import WorkflowDispatcher
+from kirara_ai.im.adapter import IMAdapter, UserProfileAdapter
+from kirara_ai.im.message import IMMessage, TextMessage, AtElement
+from kirara_ai.im.profile import UserProfile, Gender
+from kirara_ai.im.sender import ChatSender, ChatType
+from kirara_ai.logger import get_logger, HypercornLoggerWrapper
+from kirara_ai.workflow.core.dispatch.dispatcher import WorkflowDispatcher
 from .config import OneBotConfig
 from .handlers.message_result import MessageResult
 from .utils.message import create_message_element
@@ -102,19 +102,25 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
             sender = ChatSender.from_group_chat(
                 user_id=str(event.user_id),
                 group_id=str(event.group_id),
-                display_name=sender_info.get('nickname', str(event.user_id))
+                display_name=sender_info.get('nickname', str(event.user_id)),
+                metadata=sender_info
             )
         else:
             sender = ChatSender.from_c2c_chat(
                 user_id=str(event.user_id),
-                display_name=sender_info.get('nickname', str(event.user_id))
+                display_name=sender_info.get('nickname', str(event.user_id)),
+                metadata=sender_info
             )
 
         # 转换消息元素
         message_elements = []
         for msg in event.message:
             try:
-                element = create_message_element(msg['type'], msg['data'])
+                if msg['type'] == 'at':
+                    if str(msg['data']['qq']) == str(event.self_id):
+                        msg['data']['is_bot'] = True  # 标记这是at机器人的消息
+                
+                element = create_message_element(msg['type'], msg['data'], self.logger)
                 if element:
                     message_elements.append(element)
             except Exception as e:
@@ -129,10 +135,10 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
     def convert_to_message_segment(self, message: IMMessage) -> list[MessageSegment]:
         """将统一消息格式转换为 OneBot 消息段列表"""
         segments = []
-
-        # 消息类型到转换方法的映射
+        
         segment_converters = {
             'text': lambda data: MessageSegment.text(data['text']),
+            'mention': lambda data: MessageSegment.at(data['data']['target']['user_id']),
             'image': lambda data: MessageSegment.image(data['url']),
             'at': lambda data: MessageSegment.at(data['data']['qq']),
             'reply': lambda data: MessageSegment.reply(data['data']['id']),
@@ -264,9 +270,9 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
             if isinstance(message.sender, ChatSender):
                 try:
                     profile = await self.query_user_profile(message.sender)
-                    self.logger.info(f"Test query profile result: {profile}")
+                    self.logger.info(f"query profile result: {profile}")
                 except Exception as e:
-                    self.logger.error(f"Test query profile failed: {e}")
+                    self.logger.error(f"query profile failed: {e}")
 
             segments = self.convert_to_message_segment(message)
 
@@ -350,6 +356,14 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
         user_id = chat_sender.user_id
         group_id = chat_sender.group_id if chat_sender.chat_type == ChatType.GROUP else None
         
+        # 处理特殊用户 ID
+        if user_id == 'bot' or not str(user_id).isdigit():
+            return UserProfile(
+                user_id=user_id,
+                username=user_id,
+                display_name=chat_sender.display_name or 'Bot'
+            )
+        
         cache_key = f"{user_id}:{group_id}" if group_id else user_id
         
         # 检查缓存是否存在且未过期
@@ -419,7 +433,6 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
                 'last_sent_time': info.get('last_sent_time')
             }
         )
-        self.logger.info(f"Converted group member profile: {profile}")
         return profile
 
     def _convert_stranger_info(self, info: dict) -> UserProfile:
@@ -439,5 +452,4 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
             level=info.get('level'),
             avatar_url=info.get('avatar')
         )
-        self.logger.info(f"Converted stranger profile: {profile}")
         return profile

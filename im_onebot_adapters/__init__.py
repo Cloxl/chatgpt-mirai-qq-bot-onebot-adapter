@@ -1,7 +1,7 @@
-from framework.logger import get_logger
-from framework.workflow.core.dispatch.dispatcher import WorkflowDispatcher
-from framework.plugin_manager.plugin import Plugin
-from framework.im.im_registry import IMRegistry
+from kirara_ai.logger import get_logger
+from kirara_ai.workflow.core.dispatch.dispatcher import WorkflowDispatcher
+from kirara_ai.plugin_manager.plugin import Plugin
+from kirara_ai.im.im_registry import IMRegistry
 from .adapter import OneBotAdapter
 from .config import OneBotConfig
 
