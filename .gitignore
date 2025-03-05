@@ -171,3 +171,9 @@ cython_debug/
 .pypirc
 
 __init__.py
+
+
+# docs
+node_modules/
+.vitepress/cache/
+docs/.vitepress/cache/
