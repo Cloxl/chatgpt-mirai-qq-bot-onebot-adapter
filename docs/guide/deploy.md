@@ -65,7 +65,7 @@ venv\Scripts\activate     # Windows
 pip install chatgpt-mirai-qq-bot-onebot-adapter
 
 # 启动 kirara-ai
-pip -m kirara-ai
+python -m kirara-ai
 ```
 
 ## 应用插件 :gear:
