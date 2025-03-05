@@ -20,11 +20,12 @@ from .utils.message import create_message_element
 
 
 class OneBotAdapter(IMAdapter, UserProfileAdapter):
-    def __init__(self, config: OneBotConfig, dispatcher: WorkflowDispatcher):
+    dispatcher: WorkflowDispatcher
+
+    def __init__(self, config: OneBotConfig):
         # 初始化
         super().__init__()
         self.config = config  # 配置
-        self.dispatcher = dispatcher  # 工作流调度器
         self.bot = CQHttp()  # 初始化CQHttp
         self.logger = get_logger("OneBot")
 
