@@ -8,7 +8,7 @@ export default defineConfig({
     lang: 'zh-CN',
     title: 'Onebot Adapter',
     description: 'OneBot adapter for lss233/chatgpt-mirai-qq-bot documentation - 支持NapCat和LLOneBot的QQ机器人适配器',
-    base: '/chatgpt-mirai-qq-bot-onebot-adapter/',
+    // base: '/chatgpt-mirai-qq-bot-onebot-adapter/',
 
     vite: {
         resolve: {
