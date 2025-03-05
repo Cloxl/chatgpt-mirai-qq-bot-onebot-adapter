@@ -13,7 +13,7 @@ export default defineConfig({
     vite: {
         resolve: {
             alias: {
-                '@assets': '/assets'
+                '@assets': '/chatgpt-mirai-qq-bot-onebot-adapter/assets'
             }
         },
         build: {
@@ -23,7 +23,8 @@ export default defineConfig({
                     assetFileNames: 'assets/[name].[hash][extname]'
                 }
             }
-        }
+        },
+        base: '/chatgpt-mirai-qq-bot-onebot-adapter/'
     },
 
     lastUpdated: true,
