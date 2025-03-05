@@ -30,7 +30,7 @@ setup(
     ],
     project_urls={
         "Bug Tracker": "https://github.com/cloxl/chatgpt-mirai-qq-bot-onebot-adapter/issues",
-        "Documentation": "https://github.com/cloxl/chatgpt-mirai-qq-bot-onebot-adapter/wiki",
+        "Documentation": "https://oa-docs.cloxl.com",
         "Source Code": "https://github.com/cloxl/chatgpt-mirai-qq-bot-onebot-adapter",
     },
     python_requires=">=3.8",
