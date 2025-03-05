@@ -6,10 +6,11 @@ on:
     types: [ closed ]
   push:
     tags:
-      - 'v*'  # 匹配 v 开头的 tag
+      - 'v*'
 
 permissions:
-  contents: write  # 需要写入权限来创建 release
+  contents: write
+  id-token: write
 
 jobs:
   # 只在 PR 被合并到 main 分支时运行
