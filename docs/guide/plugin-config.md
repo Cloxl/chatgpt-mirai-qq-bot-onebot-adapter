@@ -46,7 +46,7 @@ Onebot 服务端指的是支持 Onebot 协议的协议服务端, 在本教程中
 
 ![配置适配器](/assets/connet/websocket-webui-step-4.png)
 
-### 修改配置文件
+<!-- ### 修改配置文件
 ::: warning 注意
 WebUI 配置方式和修改配置文件方式, 只需要选择一种就行, 不要俩种都配置!  
 WebUI 配置方式和修改配置文件方式, 只需要选择一种就行, 不要俩种都配置!  
@@ -81,7 +81,7 @@ ims:
 plugins:
   enable:
   - im_onebot_adapters  # [!code ++]
-```
+``` -->
 
 ##  Onebot 客户端配置
 Onebot 客户端指的是支持 Onebot 协议的客户端, 在本教程中指的运行在 `ntqq` 中的插件, 例如 `NapCat` 和 `LLOneBot`  
