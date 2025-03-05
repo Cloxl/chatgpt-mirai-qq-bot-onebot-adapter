@@ -1,0 +1,37 @@
+{
+  "name": "onebot-adapter-docs",
+  "version": "1.0.0",
+  "description": "OneBot adapter for lss233/chatgpt-mirai-qq-bot documentation - 一个支持NapCat和LLOneBot的QQ机器人适配器文档",
+  "keywords": [
+    "onebot",
+    "qq-bot",
+    "chatgpt",
+    "napcat",
+    "llonebot",
+    "kirara-ai",
+    "documentation",
+    "中文文档"
+  ],
+  "type": "module",
+  "main": "index.js",
+  "repository": {
+    "url": "https://github.com/Cloxl/chatgpt-mirai-qq-bot-onebot-adapter"
+  },
+  "author": "cloxl",
+  "license": "MIT",
+  "devDependencies": {
+    "vitepress": "^1.0.0-rc.22"
+  },
+  "scripts": {
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
+    "build": "npm run docs:build"
+  },
+  "dependencies": {
+    "medium-zoom": "^1.1.0",
+    "markdown-it-emoji": "^2.0.2",
+    "markdown-it-anchor": "^8.6.7",
+    "markdown-it-toc-done-right": "^4.2.0"
+  }
+}
