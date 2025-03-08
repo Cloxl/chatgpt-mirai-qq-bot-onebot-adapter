@@ -13,17 +13,9 @@ class OneBotAdapterPlugin(Plugin):
         pass
 
     def on_load(self):
-
-        class OneBotAdapterFactory:
-            def __init__(self, dispatcher: WorkflowDispatcher):
-                self.dispatcher = dispatcher
-            
-            def __call__(self, config: OneBotConfig):
-                return OneBotAdapter(config, self.dispatcher)
-        
         self.im_registry.register(
             "onebot",
-            OneBotAdapterFactory(self.workflow_dispatcher),
+            OneBotAdapter,
             OneBotConfig
         )
         
