@@ -1,19 +1,17 @@
 import asyncio
-import functools
 import random
 import time
 
-from aiocqhttp import CQHttp, Event
-from aiocqhttp import MessageSegment
-from hypercorn.asyncio import serve
-from hypercorn.config import Config
+from aiocqhttp import CQHttp, Event, MessageSegment
 
 from kirara_ai.im.adapter import IMAdapter, UserProfileAdapter
-from kirara_ai.im.message import IMMessage, TextMessage, AtElement
-from kirara_ai.im.profile import UserProfile, Gender
+from kirara_ai.im.message import AtElement, IMMessage, TextMessage
+from kirara_ai.im.profile import Gender, UserProfile
 from kirara_ai.im.sender import ChatSender, ChatType
-from kirara_ai.logger import get_logger, HypercornLoggerWrapper
+from kirara_ai.logger import get_logger
+from kirara_ai.web.app import WebServer
 from kirara_ai.workflow.core.dispatch.dispatcher import WorkflowDispatcher
+
 from .config import OneBotConfig
 from .handlers.message_result import MessageResult
 from .utils.message import create_message_element
@@ -21,6 +19,7 @@ from .utils.message import create_message_element
 
 class OneBotAdapter(IMAdapter, UserProfileAdapter):
     dispatcher: WorkflowDispatcher
+    web_server: WebServer  # 接收Web服务器引用
 
     def __init__(self, config: OneBotConfig):
         # 初始化
@@ -28,17 +27,10 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
         self.config = config  # 配置
         self.bot = CQHttp()  # 初始化CQHttp
         self.logger = get_logger("OneBot")
-
-        # 配置 hypercorn
-        from hypercorn.logging import Logger
-        self.hypercorn_config = Config()
-        self.hypercorn_config.bind = [f"{self.config.host}:{self.config.port}"]
-        self.hypercorn_config._log = Logger(self.hypercorn_config)
-        self.hypercorn_config._log.access_logger = HypercornLoggerWrapper(self.logger)
-        self.hypercorn_config._log.error_logger = HypercornLoggerWrapper(self.logger)
+        self.is_running = False  # 运行状态标志
+        self.mounted_path = None  # 挂载路径
 
         # 初始化状态
-        self._server_task = None  # 反向ws任务
         self.heartbeat_states = {}  # 存储每个 bot 的心跳状态
         self.heartbeat_interval = self.config.heartbeat_interval  # 心跳间隔
         self.heartbeat_timeout = self.config.heartbeat_interval * 2  # 心跳超时
@@ -53,6 +45,9 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
         self._profile_cache = {}  # 用户资料缓存
         self._profile_cache_time = {}  # 缓存时间记录
         self._cache_ttl = 3600  # 缓存过期时间(秒)
+        
+        # 跟踪WebSocket连接
+        self._websocket_connections = set()
 
     async def _check_heartbeats(self):
         """
@@ -87,8 +82,11 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
 
     async def _handle_msg(self, event: Event):
         """处理消息的回调函数"""
+        if not self.is_running:
+            self.logger.warning("OneBot adapter is not running, ignoring message")
+            return
+            
         message = self.convert_to_message(event)
-
         await self.dispatcher.dispatch(self, message)
 
     async def handle_notice(self, event: Event):
@@ -163,23 +161,40 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
 
         return segments
 
+    async def _track_websocket(self, websocket):
+        """跟踪WebSocket连接"""
+        self._websocket_connections.add(websocket)
+        try:
+            yield
+        finally:
+            self._websocket_connections.remove(websocket)
+
     async def start(self):
         """启动适配器"""
         try:
-            self.logger.info(f"Starting OneBot adapter on {self.config.host}:{self.config.port}")
+            self.logger.info("Starting OneBot adapter")
 
-            # 使用现有的事件循环
+            # 启动心跳检查任务
             self._heartbeat_task = asyncio.create_task(self._check_heartbeats())
             
             # 获取 quart 应用实例
             app = self.bot._server_app
             
-            # 使用 hypercorn serve 启动 quart 应用
-            self._server_task = asyncio.create_task(
-                serve(app, self.hypercorn_config)
-            )
-
-            self.logger.info(f"OneBot adapter started")
+            # 添加WebSocket连接跟踪中间件
+            original_handle_websocket = self.bot._handle_websocket
+            
+            @app.websocket('/')
+            async def patched_websocket_handler(websocket):
+                async with self._track_websocket(websocket):
+                    await original_handle_websocket(websocket)
+            
+            # 挂载到主Web服务器
+            self.mounted_path = self.config.webhook_url
+            self.web_server.mount_app(self.mounted_path, app)
+            
+            # 标记为运行中
+            self.is_running = True
+            self.logger.info(f"OneBot adapter mounted at {self.mounted_path}")
         except Exception as e:
             self.logger.error(f"Failed to start OneBot adapter: {str(e)}")
             raise
@@ -187,6 +202,9 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
     async def stop(self):
         """停止适配器"""
         try:
+            # 标记为不再运行
+            self.is_running = False
+            
             # 1. 停止消息处理
             if hasattr(self.bot, '_bus'):
                 self.bot._bus._subscribers.clear()  # 清除所有事件监听器
@@ -202,51 +220,24 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
                     pass
                 self._heartbeat_task = None
 
-            # 3. 关闭 WebSocket 连接
-            if hasattr(self.bot, '_websocket') and self.bot._websocket:
-                if not isinstance(self.bot._websocket, functools.partial):  # 检查类型
-                    await self.bot._websocket.close()
-
-            # 4. 关闭 Hypercorn 服务器
-            if hasattr(self.bot, '_server_app'):
+            # 3. 关闭所有WebSocket连接
+            for ws in list(self._websocket_connections):
                 try:
-                    # 获取 Hypercorn 服务器实例
-                    server = getattr(self.bot._server_app, '_server', None)
-                    if server:
-                        # 停止接受新连接
-                        server.close()
-                        await server.wait_closed()
-
-                    # 关闭所有 WebSocket 连接
-                    for client in getattr(self.bot._server_app, 'websocket_clients', []):
-                        if hasattr(client, 'close'):
-                            await client.close()
-
-                    # 关闭 ASGI 应用
-                    if hasattr(self.bot._server_app, 'shutdown'):
-                        await self.bot._server_app.shutdown()
-
+                    await ws.close(code=1000)  # 正常关闭
                 except Exception as e:
-                    self.logger.warning(f"Error shutting down Hypercorn server: {e}")
-
-            # 5. 取消所有相关任务
-            tasks = [t for t in asyncio.all_tasks()
-                     if any(name in str(t) for name in ['hypercorn', 'quart', 'websocket'])
-                     and not t.done()]
-
-            if tasks:
-                # 取消任务
-                for task in tasks:
-                    task.cancel()
-
-                # 等待任务取消完成
-                try:
-                    await asyncio.wait(tasks, timeout=2.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
-                    pass
-
-            # 6. 清理状态
+                    self.logger.warning(f"Error closing WebSocket: {e}")
+            
+            # 4. 从Web服务器卸载应用
+            if self.mounted_path:
+                # 找到并移除挂载的路由
+                for mount in list(self.web_server.app.routes):
+                    if hasattr(mount, "path") and mount.path == self.mounted_path:
+                        self.web_server.app.routes.remove(mount)
+                        break
+            
+            # 5. 清理状态
             self.heartbeat_states.clear()
+            self._websocket_connections.clear()
 
             self.logger.info("OneBot adapter stopped")
         except Exception as e:
@@ -265,6 +256,12 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
 
     async def send_message(self, message: IMMessage, recipient: ChatSender) -> MessageResult:
         """发送消息"""
+        if not self.is_running:
+            result = MessageResult()
+            result.success = False
+            result.error = "OneBot adapter is not running"
+            return result
+            
         result = MessageResult()
         try:
             # 只在发送者是 ChatSender 实例时才查询用户资料
@@ -309,6 +306,10 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
 
     async def send_at_message(self, group_id: str, user_id: str, message: str):
         """发送@消息"""
+        if not self.is_running:
+            self.logger.warning("OneBot adapter is not running, cannot send at message")
+            return
+            
         bot_sender = ChatSender.from_group_chat(
             user_id="<@bot>",
             group_id=group_id,
@@ -333,6 +334,10 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
 
     async def mute_user(self, group_id: str, user_id: str, duration: int):
         """禁言用户"""
+        if not self.is_running:
+            self.logger.warning("OneBot adapter is not running, cannot mute user")
+            return
+            
         await self.bot.set_group_ban(
             group_id=int(group_id),
             user_id=int(user_id),
@@ -345,6 +350,10 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter):
 
     async def kick_user(self, group_id: str, user_id: str):
         """踢出用户"""
+        if not self.is_running:
+            self.logger.warning("OneBot adapter is not running, cannot kick user")
+            return
+            
         await self.bot.set_group_kick(
             group_id=int(group_id),
             user_id=int(user_id)
