@@ -17,3 +17,5 @@ pnpm-global
 TODOs.md
 *.timestamp-*.mjs
 
+__pycache__
+.python-version
