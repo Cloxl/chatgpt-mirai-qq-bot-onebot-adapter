@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 
 def make_webhook_url():
-    return f"/im/webhook/onebot/{str(uuid.uuid4())[:8]}"
+    return f"/im/webhook/onebot/{str(uuid.uuid4())[:8]}/ws"
 
 
 def auto_generate_webhook_url(s: dict):
@@ -16,8 +16,10 @@ def auto_generate_webhook_url(s: dict):
 
 class OneBotConfig(BaseModel):
     """OneBot 适配器配置"""
-    host: str = Field(default="127.0.0.1", description="OneBot 服务器地址")
-    port: int = Field(default=5455, description="OneBot 服务器端口")
+    host: Optional[str] = Field(description="已OneBot 服务器地址",
+                                default=None, json_schema_extra={"hidden_unset": True})
+    port: Optional[int] = Field(description="OneBot 服务器端口",
+                                default=None, json_schema_extra={"hidden_unset": True})
     access_token: Optional[str] = Field(default=None, description="访问令牌")
     heartbeat_interval: int = Field(default=15, description="心跳间隔 (秒)")
     
