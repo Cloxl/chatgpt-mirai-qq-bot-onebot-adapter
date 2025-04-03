@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from ..events.operation_event import OperationType
 
@@ -12,8 +12,4 @@ class MessageResult:
     operation_type: OperationType = OperationType.MUTE
     operation_duration: Optional[int] = None
     error: Optional[str] = None
-    raw_results: List[Dict[str, Any]] = None
-
-    def __post_init__(self):
-        if self.raw_results is None:
-            self.raw_results = []
+    raw_results: List[Dict[str, Any]] = field(default_factory=list)
