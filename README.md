@@ -13,7 +13,7 @@ pip install chatgpt-mirai-qq-bot-onebot-adapter
 
 ## 开源协议
 
-本项目基于 [ChatGPT-Mirai-QQ-Bot](https://github.com/lss233/kirara-ai) 开发，遵循其 [开源协议](https://github.com/lss233/kirara-ai/blob/master/LICENSE)
+本项目基于 [Kirara-AI](https://github.com/lss233/kirara-ai) 开发，遵循其 [开源协议](https://github.com/lss233/kirara-ai/blob/master/LICENSE)
 
 ## 感谢
 
