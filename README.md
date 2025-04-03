@@ -1,4 +1,4 @@
-# Onebot Adapter for Kirara AI
+# OneBot Adapter for Kirara AI
 
 本项目是 [Kirara-AI](https://github.com/lss233/Kirara-AI) 的一个插件，用于将OneBot协议的消息转换为Kirara-AI的消息格式。
 
