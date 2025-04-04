@@ -4,11 +4,11 @@ import os
                                                                                                                                                                                                                                                                                                                                         
 setup(
     name="chatgpt-mirai-qq-bot-onebot-adapter",
-    version="0.2.4.post1",
+    version="0.3.0",
     packages=find_packages(),
     install_requires=[
         "aiocqhttp[all]>=1.4.4",
-        "kirara-ai<3.2.0"
+        "kirara-ai>=3.2.0a1"
     ],
     entry_points={
         'chatgpt_mirai.plugins': [
