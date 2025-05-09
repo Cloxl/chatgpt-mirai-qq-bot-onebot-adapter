@@ -11,7 +11,7 @@ import aiocqhttp
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 
-from kirara_ai.im.adapter import BotProfileAdapter, IMAdapter, UserProfileAdapter
+from kirara_ai.im.adapter import BotProfileAdapter, EditStateAdapter, IMAdapter, UserProfileAdapter
 from kirara_ai.im.message import FaceElement, IMMessage, ImageMessage, JsonElement, MentionElement, ReplyElement, TextMessage, AtElement, VideoMessage, VoiceMessage
 from kirara_ai.im.profile import UserProfile, Gender
 from kirara_ai.im.sender import ChatSender, ChatType
@@ -23,7 +23,7 @@ from .handlers.message_result import MessageResult
 from .utils.message import create_message_element
 
 
-class OneBotAdapter(IMAdapter, UserProfileAdapter, BotProfileAdapter):
+class OneBotAdapter(IMAdapter, UserProfileAdapter, BotProfileAdapter, EditStateAdapter):
     dispatcher: WorkflowDispatcher
     web_server: WebServer
 
@@ -497,3 +497,33 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter, BotProfileAdapter):
             display_name=profile.get('nickname'),
             avatar_url=f"https://q1.qlogo.cn/g?b=qq&nk={self.self_id}&s=640"
         )
+
+    async def set_chat_editing_state(
+        self, chat_sender: ChatSender, is_editing: bool = True
+    ):
+        """
+        设置或取消对话的编辑状态
+        :param chat_sender: 对话的发送者
+        :param is_editing: True 表示正在编辑，False 表示取消编辑状态
+        """
+        action = "typing" if is_editing else "cancel"
+        chat_id = (
+            chat_sender.user_id
+            if chat_sender.chat_type == ChatType.C2C
+            else chat_sender.group_id
+        )
+        if not chat_id:
+            raise ValueError("Unable to get chat_id")
+
+        try:
+            self.logger.debug(
+                f"Setting chat editing state to {is_editing} for chat_id {chat_id}"
+            )
+            if is_editing:
+                # OneBot不支持发送输入状态，这里只记录日志
+                pass
+            else:
+                # 取消编辑状态时
+                pass
+        except Exception as e:
+            self.logger.warning(f"Failed to set chat editing state: {str(e)}")
