@@ -3,7 +3,9 @@ import asyncio
 import functools
 import random
 import time
-from typing import Dict, Optional
+import weakref
+from typing import Dict, Optional, Set, Any
+from urllib.parse import urlparse
 
 from aiocqhttp import CQHttp, Event
 from aiocqhttp import MessageSegment
@@ -21,6 +23,44 @@ from kirara_ai.workflow.core.dispatch.dispatcher import WorkflowDispatcher
 from .config import OneBotConfig
 from .handlers.message_result import MessageResult
 from .utils.message import create_message_element
+
+
+# 全局连接桥，用于在适配器重启期间保持WebSocket路由可用
+class ConnectionBridge:
+    # 使用类变量来确保全局唯一
+    _instance = None
+    _routes_registry = {}  # 注册的WebSocket路由
+    _active_paths = set()  # 当前活跃的路径
+    _logger = get_logger("OneBotBridge")
+    
+    @classmethod
+    def instance(cls):
+        if cls._instance is None:
+            cls._instance = ConnectionBridge()
+        return cls._instance
+    
+    def register_path(self, base_url, app, mount_path):
+        """注册WebSocket路径，即使适配器重启也保持可用"""
+        self._active_paths.add(base_url)
+        self._routes_registry[base_url] = (app, mount_path)
+        self._logger.debug(f"已注册WebSocket路径: {base_url}")
+        return True
+    
+    def unregister_path(self, base_url):
+        """取消注册WebSocket路径"""
+        if base_url in self._active_paths:
+            self._active_paths.remove(base_url)
+            self._logger.debug(f"已注销WebSocket路径: {base_url}")
+            return True
+        return False
+    
+    def is_path_active(self, base_url):
+        """检查WebSocket路径是否处于活跃状态"""
+        return base_url in self._active_paths
+    
+    def get_registered_paths(self):
+        """获取所有注册的WebSocket路径"""
+        return list(self._active_paths)
 
 
 class OneBotAdapter(IMAdapter, UserProfileAdapter, BotProfileAdapter, EditStateAdapter):
@@ -41,6 +81,7 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter, BotProfileAdapter, EditStateA
         self.heartbeat_interval = self.config.heartbeat_interval  # 心跳间隔
         self.heartbeat_timeout = self.config.heartbeat_interval * 2  # 心跳超时
         self._heartbeat_task = None  # 心跳检查任务
+        self._connection_bridge = ConnectionBridge.instance()  # 获取连接桥
 
         # 注册事件处理器
         self.bot.on_meta_event(self._handle_meta)  # 元事件处理器
@@ -51,6 +92,11 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter, BotProfileAdapter, EditStateA
         self._profile_cache: Dict[str, UserProfile] = {}  # 用户资料缓存
         self._profile_cache_time: Dict[str, float] = {}  # 缓存时间记录
         self._cache_ttl = 3600  # 缓存过期时间(秒)
+        
+        # 重连管理
+        self._reconnect_monitor_task = None
+        self._last_connection_time = 0
+        self._client_reconnect_attempts = {}
 
     async def _check_heartbeats(self):
         """
@@ -59,13 +105,19 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter, BotProfileAdapter, EditStateA
         兼容一些不发送disconnect事件的bot平台
         """
         while True:
-            current_time = time.time()
-            for self_id, last_time in list(self.heartbeat_states.items()):
-                if current_time - last_time > self.heartbeat_timeout:
-                    self.logger.warning(
-                        f"Bot {self_id} disconnected (heartbeat timeout)")
-                    self.heartbeat_states.pop(self_id, None)
-            await asyncio.sleep(self.heartbeat_interval)
+            try:
+                current_time = time.time()
+                for self_id, last_time in list(self.heartbeat_states.items()):
+                    if current_time - last_time > self.heartbeat_timeout:
+                        self.logger.warning(
+                            f"Bot {self_id} disconnected (heartbeat timeout)")
+                        self.heartbeat_states.pop(self_id, None)
+                await asyncio.sleep(self.heartbeat_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"心跳检查任务异常: {e}")
+                await asyncio.sleep(5)  # 发生异常时短暂休息再继续
 
     async def _handle_meta(self, event: Event):
         """处理元事件"""
@@ -75,6 +127,10 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter, BotProfileAdapter, EditStateA
             if event.get('sub_type') == 'connect':
                 self.logger.info(f"Bot {self_id} connected")
                 self.heartbeat_states[self_id] = time.time()
+                self._last_connection_time = time.time()
+                # 重置重连尝试计数
+                if self_id in self._client_reconnect_attempts:
+                    self._client_reconnect_attempts[self_id] = 0
 
             elif event.get('sub_type') == 'disconnect':
                 # 当bot断开连接时,  停止该bot的事件处理
@@ -207,25 +263,119 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter, BotProfileAdapter, EditStateA
         self.logger.info(f"OneBot adapter started")
 
     async def _inject_websocket_service(self):
-        """注入 WebSocket 服务"""
+        """注入 WebSocket 服务到现有Web应用中"""
+        # 获取应用和路径配置
         app = self.bot._server_app
-        # 因为 CQHttp 注册了 /ws 路径，所以需要去除掉后缀再注册
-        register_base_url = self.config.websocket_url.removesuffix("/ws")
-        self.web_server.app.mount(register_base_url, app) # type: ignore
+        register_base_url = self.config.websocket_url
+        self.logger.debug(f"注册OneBot WebSocket路径: {register_base_url}")
+        
+        # 解析路径并规范化挂载路径
+        parsed_url = urlparse(register_base_url)
+        path_parts = parsed_url.path.split('/')
+        
+        # 处理挂载路径，确保正确格式
+        mount_path = '/'.join(path_parts[:-1]) if len(path_parts) > 1 else ''
+        if not mount_path.startswith('/'):
+            mount_path = '/' + mount_path
+        if mount_path.endswith('/'):
+            mount_path = mount_path[:-1]
+        
+        # 存储挂载信息以便稍后停止服务
+        self._mount_path = mount_path
+        
+        # 注册到连接桥，保持路径在重启期间可用
+        self._connection_bridge.register_path(register_base_url, app, mount_path)
+        
+        try:
+            # 注册WebSocket路由
+            if hasattr(self.bot, '_server_app'):
+                from quart import websocket
+                
+                # 提取WebSocket路由名
+                ws_route = path_parts[-1] if path_parts else 'ws'
+                
+                # 清理可能存在的旧路由，避免冲突
+                if hasattr(self.bot._server_app, 'url_map'):
+                    for rule in list(self.bot._server_app.url_map.iter_rules()):
+                        self.bot._server_app.url_map._rules.remove(rule)
+                
+                # 保存原始处理函数
+                original_handle_ws = self.bot._handle_ws
+                
+                # 简化后的WebSocket处理器
+                @self.bot._server_app.websocket(f'/{ws_route}')
+                async def ws_handler():
+                    # 记录基本连接信息
+                    client_ip = websocket.remote_addr or '未知IP'
+                    
+                    # 更新连接时间
+                    self._last_connection_time = time.time()
+                    
+                    # 处理WebSocket连接
+                    try:
+                        await original_handle_ws()
+                    except Exception:
+                        pass
+                
+                # 添加生命周期钩子
+                @self.bot._server_app.before_serving
+                async def before_serving():
+                    pass
+                
+                @self.bot._server_app.after_serving
+                async def after_serving():
+                    pass
+            
+            # 移除冲突路由
+            for route in list(self.web_server.app.routes):
+                if hasattr(route, 'path') and str(route.path).startswith(mount_path):
+                    self.web_server.app.routes.remove(route)
+            
+            # 挂载WebSocket应用
+            self.web_server.app.mount(mount_path, app)
+            self.logger.info(f"挂载OneBot WebSocket应用到路径: {mount_path}")
+            
+            # 启动重连监控，保证稳定性
+            self._start_reconnect_monitor()
+            
+        except Exception as e:
+            self.logger.error(f"挂载WebSocket路径失败: {e}", exc_info=True)
+            raise
+        
         self.logger.info(f"OneBot adapter started")
 
-    async def start(self):
-        """启动适配器"""
+    def _start_reconnect_monitor(self):
+        """启动简化版的重连监控任务"""
+        if self._reconnect_monitor_task is None or self._reconnect_monitor_task.done():
+            self._reconnect_monitor_task = asyncio.create_task(self._monitor_reconnections())
+    
+    async def _monitor_reconnections(self):
+        """精简版监控重连，只保留核心功能"""
         try:
-            if self.config.host and self.config.port:
-                self.logger.warning("正在使用过时的启动模式，请尽快更新为 Websocket Url 模式。")
-                await self._start_standalone_server()
-            else:
-                await self._inject_websocket_service()
-
+            while True:
+                await asyncio.sleep(15)  # 检查间隔
+                
+                # 只在服务长时间无连接时检查
+                current_time = time.time()
+                if not self.heartbeat_states and (current_time - self._last_connection_time > 30):
+                    # 只检查并修复丢失的路由
+                    if hasattr(self, '_mount_path') and hasattr(self, 'web_server'):
+                        # 检查路由是否存在
+                        route_found = any(
+                            hasattr(route, 'path') and str(route.path).startswith(self._mount_path)
+                            for route in self.web_server.app.routes
+                        )
+                        
+                        # 如果路由不存在，尝试重新挂载
+                        if not route_found and hasattr(self.bot, '_server_app'):
+                            try:
+                                self.web_server.app.mount(self._mount_path, self.bot._server_app)
+                            except Exception:
+                                pass
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
-            self.logger.error(f"Failed to start OneBot adapter: {str(e)}")
-            raise
+            self.logger.error(f"重连监控异常: {e}")
 
     async def _stop_standalone_server(self):
         """停止旧版服务器"""
@@ -255,33 +405,118 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter, BotProfileAdapter, EditStateA
     async def stop(self):
         """停止适配器"""
         try:
-            # 1. 停止消息处理
+            # 1. 停止重连监控
+            if self._reconnect_monitor_task and not self._reconnect_monitor_task.done():
+                self._reconnect_monitor_task.cancel()
+                try:
+                    await self._reconnect_monitor_task
+                except asyncio.CancelledError:
+                    pass
+                self._reconnect_monitor_task = None
+            
+            # 2. 停止消息处理
             if hasattr(self.bot, '_bus'):
                 self.bot._bus._subscribers.clear()  # 清除所有事件监听器
 
-            # 2. 停止心跳检查
+            # 3. 停止心跳检查
             if self._heartbeat_task and not self._heartbeat_task.done():
                 self._heartbeat_task.cancel()
+                try:
+                    await self._heartbeat_task
+                except asyncio.CancelledError:
+                    pass
                 self._heartbeat_task = None
 
-            # 3. 关闭 WebSocket 连接
+            # 4. 关闭 WebSocket 连接
             if hasattr(self.bot, '_websocket') and self.bot._websocket:
                 if not isinstance(self.bot._websocket, functools.partial):  # 检查类型
-                    await self.bot._websocket.close()
+                    try:
+                        await self.bot._websocket.close()
+                    except Exception as e:
+                        self.logger.warning(f"关闭WebSocket连接失败: {e}")
 
+            # 5. 停止适配器服务器
             if self.config.host and self.config.port:
                 await self._stop_standalone_server()
             else:
-                # unregister old route if exists
-                for route in self.web_server.app.routes:
-                    if self.config.websocket_url in route.path: # type: ignore
-                        self.web_server.app.routes.remove(route)
+                # 使用存储的挂载路径卸载应用
+                mount_path = getattr(self, '_mount_path', None)
+                
+                if mount_path:
+                    # 在从连接桥中取消注册之前，检查是否有活跃连接
+                    if hasattr(self, '_connection_bridge') and hasattr(self, 'config'):
+                        self._connection_bridge.unregister_path(self.config.websocket_url)
+                    
+                    # 尝试卸载应用
+                    try:
+                        # 先尝试删除路由
+                        routes_to_remove = []
+                        for route in self.web_server.app.routes:
+                            if hasattr(route, 'path') and str(route.path).startswith(mount_path):
+                                routes_to_remove.append(route)
+                                
+                        for route in routes_to_remove:
+                            self.web_server.app.routes.remove(route)
+                        
+                        # 如果应用支持卸载挂载点
+                        if hasattr(self.web_server.app, 'remove_route'):
+                            self.web_server.app.remove_route(mount_path)
+                        
+                    except Exception as e:
+                        self.logger.warning(f"卸载WebSocket路径失败: {e}")
+                
+                # 关闭 aiocqhttp 应用
+                if hasattr(self.bot, '_server_app'):
+                    try:
+                        # 关闭WebSocket连接
+                        if hasattr(self.bot._server_app, 'websocket_clients'):
+                            client_count = 0
+                            for client in list(getattr(self.bot._server_app, 'websocket_clients', [])):
+                                try:
+                                    if hasattr(client, 'close'):
+                                        await client.close()
+                                        client_count += 1
+                                except Exception as e:
+                                    self.logger.warning(f"关闭WebSocket客户端连接失败: {e}")
+                            
+                            if client_count > 0:
+                                pass
+                        
+                        # 关闭应用服务器 - 修复没有shutdown属性的问题
+                        try:
+                            # 尝试不同的方法关闭Quart应用
+                            if hasattr(self.bot._server_app, '_server'):
+                                server = self.bot._server_app._server
+                                if hasattr(server, 'close'):
+                                    server.close()
+                                    if hasattr(server, 'wait_closed') and asyncio.iscoroutinefunction(server.wait_closed):
+                                        await server.wait_closed()
+                                    
+                            # 清理事件循环中的任务
+                            tasks = []
+                            for task in asyncio.all_tasks():
+                                if 'quart' in str(task) or 'aiocqhttp' in str(task):
+                                    tasks.append(task)
+                            
+                            # 记录任务状态
+                            if tasks:
+                                self.logger.debug(f"清理了 {len(tasks)} 个与Quart相关的任务")
+                            
+                        except Exception as inner_e:
+                            self.logger.warning(f"关闭Quart服务器实例失败: {inner_e}")
+                    except Exception as e:
+                        self.logger.warning(f"关闭Quart应用失败: {e}")
+                
             # 6. 清理状态
             self.heartbeat_states.clear()
+            
+            # 7. 主动请求GC回收资源
+            import gc
+            gc.collect()
 
             self.logger.info("OneBot adapter stopped")
         except Exception as e:
-            self.logger.error(f"Error stopping OneBot adapter: {e}")
+            self.logger.error(f"Error stopping OneBot adapter: {e}", exc_info=True)
 
     async def recall_message(self, message_id: int, delay: int = 0):
         """撤回消息
@@ -527,3 +762,26 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter, BotProfileAdapter, EditStateA
                 pass
         except Exception as e:
             self.logger.warning(f"Failed to set chat editing state: {str(e)}")
+
+    # 重写启动方法，确保心跳和重连机制正确初始化
+    async def start(self):
+        """启动适配器"""
+        try:
+            # 重置状态变量
+            self._last_connection_time = time.time()
+            self.heartbeat_states.clear()
+            self._client_reconnect_attempts.clear()
+            
+            # 启动心跳监控
+            self._heartbeat_task = asyncio.create_task(self._check_heartbeats())
+            
+            # 根据配置选择启动模式
+            if self.config.host and self.config.port:
+                self.logger.warning("正在使用过时的启动模式，请尽快更新为 Websocket Url 模式。")
+                await self._start_standalone_server()
+            else:
+                await self._inject_websocket_service()
+
+        except Exception as e:
+            self.logger.error(f"Failed to start OneBot adapter: {str(e)}", exc_info=True)
+            raise

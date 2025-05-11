@@ -3,7 +3,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
-WEBSOCKET_URL_PREFIX = "/im/websocket/onebot"
+WEBSOCKET_URL_PREFIX = "/onebot/websocket"
 
 
 def make_websocket_url():
