@@ -153,7 +153,22 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter, BotProfileAdapter, EditStateA
         pass
 
     async def convert_to_message(self, event: Event) -> IMMessage:
-        """将 OneBot 消息转换为统一消息格式"""
+        """
+        将 OneBot 消息转换为统一消息格式
+        
+        处理流程:
+        1. 构建发送者信息
+        2. 检测是否包含回复元素，并获取原始回复消息详情
+        3. 构建消息元素列表，包括回复元素和其他消息元素
+        4. 构建完整的 IMMessage 对象
+        5. 如果存在回复元素，构建完整的回复消息对象，并附加到原始消息中
+        
+        Args:
+            event: OneBot 的原始事件对象
+            
+        Returns:
+            IMMessage: 转换后的统一消息格式对象
+        """
         assert event.message is not None
         # 构造发送者信息
         sender_info = event.sender or {}
@@ -173,24 +188,161 @@ class OneBotAdapter(IMAdapter, UserProfileAdapter, BotProfileAdapter, EditStateA
 
         # 转换消息元素
         message_elements = []
+        # 解析reply信息
+        reply_data = None
+        reply_id = None
+        reply_element = None
+        
+        # 首先检查是否有回复消息，优先处理
+        for msg in event.message:
+            if msg['type'] == 'reply':
+                reply_id = msg['data'].get('id')
+                
+                # 获取回复的原始消息详细信息
+                try:
+                    if reply_id and hasattr(self.bot, 'get_msg'):
+                        # 尝试通过API获取原始消息
+                        reply_msg_info = await self.bot.get_msg(message_id=int(reply_id))
+                        if reply_msg_info:
+                            self.logger.debug(f"获取到回复消息详情: {reply_msg_info}")
+                            # 构建完整的reply数据，包括所有可能的元数据
+                            reply_data = {
+                                'message_id': reply_id,
+                                'content': reply_msg_info.get('message', ''),
+                                'raw_message': reply_msg_info.get('raw_message', ''),
+                                'sender': {
+                                    'user_id': str(reply_msg_info.get('sender', {}).get('user_id', '')),
+                                    'nickname': reply_msg_info.get('sender', {}).get('nickname', ''),
+                                    'card': reply_msg_info.get('sender', {}).get('card', ''),
+                                },
+                                'group_id': str(reply_msg_info.get('group_id', '')) if reply_msg_info.get('group_id') else None,
+                                'message_type': reply_msg_info.get('message_type', ''),
+                                'message_seq': reply_msg_info.get('message_seq', ''),
+                                'time': reply_msg_info.get('time', 0)
+                            }
+                            
+                            # 创建ReplyElement并设置详细数据
+                            reply_element = ReplyElement(reply_id)
+                            reply_element.json_data = reply_data
+                            message_elements.append(reply_element)
+                except Exception as e:
+                    self.logger.warning(f"获取回复消息详情失败: {e}")
+                break
+
+        # 处理所有其他消息元素
         for msg in event.message:
             try:
+                # 跳过已处理的reply元素
+                if msg['type'] == 'reply' and reply_element:
+                    continue
+                    
                 if msg['type'] == 'at':
                     if str(msg['data']['qq']) == str(event.self_id):
                         msg['data']['is_bot'] = True  # 标记这是at机器人的消息
 
+                # 创建消息元素
                 element = create_message_element(
                     msg['type'], msg['data'], self.logger)
+                
+                # 如果是reply元素但没有在前面处理过，设置json_data
+                if element and msg['type'] == 'reply' and not reply_element and reply_data:
+                    if isinstance(element, ReplyElement):
+                        element.json_data = reply_data
+                        reply_element = element
+                        
                 if element:
                     message_elements.append(element)
             except Exception as e:
                 self.logger.error(f"Failed to convert message element: {e}")
 
-        return IMMessage(
+        # 构建IMMessage
+        result_message = IMMessage(
             sender=sender,
             message_elements=message_elements,
             raw_message=event
         )
+        
+        # 为原始消息增加reply_reference字段，方便后续处理
+        if reply_data and isinstance(result_message.raw_message, dict):
+            result_message.raw_message['reply_reference'] = reply_data
+        
+        # 处理reply消息
+        if reply_element and reply_data:
+            # 获取回复内容，用于调试
+            reply_content = result_message.get_reply_content()
+            self.logger.debug(f"回复消息内容: {reply_content}")
+            
+            # 构建并映射回复消息对象，便于后续处理
+            # 这个回复消息对象将作为完整的IMMessage传递给workflow处理
+            reply_message = await self.build_reply_message(result_message, reply_element, reply_data)
+            if reply_message:
+                # 将构建的回复消息添加到原始消息的元数据中，以便于workflow访问
+                if isinstance(result_message.raw_message, dict):
+                    result_message.raw_message['reply_message'] = reply_message.to_dict()
+                    self.logger.debug(f"已将回复消息映射到原始消息中: {reply_message}")
+            
+        return result_message
+    
+    async def build_reply_message(self, original_message: IMMessage, reply_element: ReplyElement, reply_data: dict) -> Optional[IMMessage]:
+        """从回复元素构建回复消息对象
+        
+        Args:
+            original_message: 原始消息对象
+            reply_element: 回复元素
+            reply_data: 回复消息数据
+            
+        Returns:
+            构建的回复消息对象，如果构建失败返回None
+        """
+        try:
+            # 如果没有必要的回复数据，返回None
+            if not reply_data or not isinstance(reply_data, dict):
+                return None
+                
+            # 构建发送者信息
+            sender_info = reply_data.get('sender', {})
+            user_id = str(sender_info.get('user_id', ''))
+            nickname = sender_info.get('nickname', '') or sender_info.get('card', '') or user_id
+            
+            # 确定消息类型（群聊/私聊）
+            group_id = reply_data.get('group_id')
+            
+            # 构建发送者
+            if group_id:
+                sender = ChatSender.from_group_chat(
+                    user_id=user_id,
+                    group_id=str(group_id),
+                    display_name=nickname,
+                    metadata=sender_info
+                )
+            else:
+                sender = ChatSender.from_c2c_chat(
+                    user_id=user_id,
+                    display_name=nickname,
+                    metadata=sender_info
+                )
+            
+            # 解析原始回复消息内容
+            raw_message = reply_data.get('content', '')
+            message_elements = []
+            
+            # 简单添加文本内容
+            content = reply_element.get_source_content()
+            if content:
+                message_elements.append(TextMessage(content))
+            
+            # 构建回复消息对象
+            reply_message = IMMessage(
+                sender=sender,
+                message_elements=message_elements,
+                raw_message=reply_data
+            )
+            
+            return reply_message
+            
+        except Exception as e:
+            self.logger.error(f"构建回复消息对象失败: {e}")
+            return None
 
     async def convert_to_message_segment(self, message: IMMessage) -> list[MessageSegment]:
         """将统一消息格式转换为 OneBot 消息段列表"""
