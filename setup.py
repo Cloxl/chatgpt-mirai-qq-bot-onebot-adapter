@@ -4,7 +4,7 @@ import os
                                                                                                                                                                                                                                                                                                                                         
 setup(
     name="chatgpt-mirai-qq-bot-onebot-adapter",
-    version="0.3.0",
+    version=os.environ.get("RELEASE_VERSION", "0.3.0"),
     packages=find_packages(),
     install_requires=[
         "aiocqhttp[all]>=1.4.4",
